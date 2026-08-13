@@ -119,7 +119,10 @@ class MediaMtxSrtPublisher(
     }
 
     override fun onConnectionStarted(url: String) = listener.onPublisherStatus(PublisherStatus.CONNECTING, "SRT handshake started.")
-    override fun onConnectionSuccess() = listener.onPublisherStatus(PublisherStatus.LIVE, "Canonical SRT source is live: ${config.path}")
+    override fun onConnectionSuccess() {
+        discontinuityReported = false
+        listener.onPublisherStatus(PublisherStatus.LIVE, "Canonical SRT source is live: ${config.path}")
+    }
     override fun onDisconnect() {
         if (!intentionallyStopped) listener.onPublisherStatus(PublisherStatus.RECONNECTING, "Publisher disconnected; retrying canonical source.")
     }
