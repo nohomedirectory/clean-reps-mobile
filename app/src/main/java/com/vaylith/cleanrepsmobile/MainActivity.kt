@@ -15,6 +15,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.vaylith.cleanrepsmobile.api.ChallengeApi
 import com.vaylith.cleanrepsmobile.api.ChallengeEventClient
 import com.vaylith.cleanrepsmobile.feedback.AthleteFeedback
@@ -124,7 +126,19 @@ class MainActivity : ComponentActivity() {
                 Text("One H.264/AAC SRT source publishes only to MediaMTX. A disconnect opens a new source epoch; server fan-out and the authoritative ledger remain server-owned.", style = MaterialTheme.typography.bodySmall)
             }
         }
-        DisposableEffect(Unit) { onDispose { publisher.releasePreview() } }
+        DisposableEffect(publisher) {
+            // This sprint intentionally does not claim a background camera service. If the
+            // foreground Activity loses visibility, stop contribution instead of leaving a
+            // stale LIVE status while Android may revoke camera/microphone access.
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_STOP) lifecycleScope.launch { publisher.stop() }
+            }
+            lifecycle.addObserver(observer)
+            onDispose {
+                lifecycle.removeObserver(observer)
+                publisher.releasePreview()
+            }
+        }
     }
 
     override fun onDestroy() { eventClient.stop(); feedback.close(); super.onDestroy() }
