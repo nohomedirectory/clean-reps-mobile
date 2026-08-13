@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
                             } catch (e: Exception) { state = state.copy(readiness = CaptureReadiness.ERROR, statusDetail = e.message ?: "API failed") }
                         }
                     }, enabled = api.configured) { Text("Create / switch block") }
-                    Button(onClick = { camera.startSafetyRecording({ uri -> state = state.copy(statusDetail = "Safety clip saved: $uri") }, { error -> state = state.copy(statusDetail = error) }); lifecycleScope.launch { when (val result = publisher.start(state.epoch)) { is com.vaylith.cleanrepsmobile.media.PublisherResult.Blocked -> state = state.copy(readiness = CaptureReadiness.PUBLISHER_UNAVAILABLE, statusDetail = result.reason); else -> Unit } } }) { Text("Start capture") }
+                    Button(onClick = { camera.startSafetyRecording({ uri -> state = state.copy(statusDetail = "Safety clip saved: $uri") }, { error -> state = state.copy(statusDetail = error) }); lifecycleScope.launch { when (val result = publisher.start(state.epoch)) { is com.vaylith.cleanrepsmobile.media.PublisherResult.Blocked -> { state.captureId?.let { api.reportSourceHealth(it, state.epoch, "blocked", result.reason) }; state = state.copy(readiness = CaptureReadiness.PUBLISHER_UNAVAILABLE, statusDetail = result.reason) }; else -> Unit } } }) { Text("Start capture") }
                     OutlinedButton(onClick = { camera.stopSafetyRecording(); lifecycleScope.launch { publisher.stop() }; state = state.copy(readiness = CaptureReadiness.STOPPED, statusDetail = "Capture stopped; local spool remains on device cache.") }) { Text("Stop") }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
