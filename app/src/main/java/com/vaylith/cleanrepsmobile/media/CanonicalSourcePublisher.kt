@@ -95,7 +95,7 @@ class MediaMtxSrtPublisher(
             prepareIfNeeded()
             stream.getStreamClient().setReTries(8)
             if (!stream.isStreaming) {
-                listener.onPublisherStatus(PublisherStatus.CONNECTING, "Connecting one SRT source for epoch ${epoch.id.take(8)}…")
+                listener.onPublisherStatus(PublisherStatus.CONNECTING, "Connecting one SRT source for epoch ${epoch.displayId}…")
                 stream.startStream(config.endpoint())
                 startSafetySpool(epoch)
             }
@@ -154,7 +154,7 @@ class MediaMtxSrtPublisher(
     private fun startSafetySpool(epoch: SourceEpoch) {
         if (stream.isRecording) return
         val directory = File(context.cacheDir, "safety-spool").apply { mkdirs() }
-        val output = File(directory, "kick-${epoch.id}-${System.currentTimeMillis()}.mp4")
+        val output = File(directory, "kick-${epoch.displayId}-${System.currentTimeMillis()}.mp4")
         stream.startRecord(output.absolutePath) { status ->
             when (status) {
                 RecordController.Status.RECORDING -> listener.onSafetyRecording("Local safety spool recording: ${output.name}")

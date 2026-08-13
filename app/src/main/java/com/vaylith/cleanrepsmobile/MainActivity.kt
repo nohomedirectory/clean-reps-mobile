@@ -65,14 +65,33 @@ class MainActivity : ComponentActivity() {
                             PublisherStatus.ERROR -> CaptureReadiness.ERROR
                         }
                         state = state.copy(readiness = readiness, statusDetail = detail)
-                        if (state.captureId != null && readiness in setOf(CaptureReadiness.LIVE, CaptureReadiness.RECONNECTING, CaptureReadiness.ERROR)) {
-                            lifecycleScope.launch { runCatching { api.reportSourceHealth(state.captureId!!, state.epoch, readiness.name.lowercase(), detail) } }
+                        val serverHealth = when (readiness) {
+                            CaptureReadiness.LIVE -> "healthy"
+                            CaptureReadiness.CONNECTING, CaptureReadiness.RECONNECTING -> "degraded"
+                            CaptureReadiness.STOPPED, CaptureReadiness.ERROR -> "lost"
+                            else -> null
+                        }
+                        if (state.captureId != null && serverHealth != null) {
+                            lifecycleScope.launch { runCatching { api.reportSourceHealth(state.captureId!!, serverHealth, detail) } }
                         }
                     }
                     override fun onSourceDiscontinuity(detail: String) = runOnUiThread {
-                        val nextEpoch = SourceEpoch()
-                        state = state.copy(epoch = nextEpoch, readiness = CaptureReadiness.RECONNECTING, statusDetail = "New source epoch ${nextEpoch.id.take(8)}: $detail")
-                        state.captureId?.let { captureId -> lifecycleScope.launch { runCatching { api.reportSourceHealth(captureId, nextEpoch, "reconnecting", detail) } } }
+                        val nextEpoch = state.epoch.next()
+                        state = state.copy(epoch = nextEpoch, captureId = null, readiness = CaptureReadiness.RECONNECTING, statusDetail = "New source epoch ${nextEpoch.displayId}: attaching capture before reconnect.")
+                        state.sessionId?.let { sessionId -> lifecycleScope.launch {
+                            try {
+                                // A source epoch is immutable on CaptureSession. Reconnect is a
+                                // new capture attachment, never a mutation of the old epoch.
+                                val captureId = api.attachCapture(sessionId, BuildConfig.MEDIAMTX_STREAM_PATH, nextEpoch)
+                                state = state.copy(captureId = captureId, statusDetail = "New source epoch ${nextEpoch.displayId} attached; publisher reconnecting.")
+                                // The transport callback may win this race. It still cannot
+                                // report the new capture healthy until this attachment exists.
+                                val health = if (state.readiness == CaptureReadiness.LIVE) "healthy" else "degraded"
+                                api.reportSourceHealth(captureId, health, detail)
+                            } catch (error: Exception) {
+                                state = state.copy(readiness = CaptureReadiness.ERROR, statusDetail = "Could not attach new source epoch: ${error.message ?: "API failure"}")
+                            }
+                        } }
                     }
                     override fun onSafetyRecording(detail: String) = runOnUiThread { state = state.copy(statusDetail = detail) }
                 },
@@ -85,7 +104,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     Card { Text("Camera and microphone permission are required. Grant permission, then reopen this screen.", Modifier.padding(12.dp)) }
                 }
-                Text("${state.selection.technique.replace('_', ' ')} / ${state.selection.side} · epoch ${state.epoch.id.take(8)}")
+                Text("${state.selection.technique.replace('_', ' ')} / ${state.selection.side} · epoch ${state.epoch.displayId}")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.RIGHT), blockId = null, statusDetail = "Right block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick · Right") }
                     Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.LEFT), blockId = null, statusDetail = "Left block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick · Left") }
@@ -97,9 +116,19 @@ class MainActivity : ComponentActivity() {
                             try {
                                 val session = state.sessionId ?: api.createSession("million-kicks-launch")
                                 val block = api.createBlock(session, state.selection)
-                                val capture = state.captureId ?: api.attachCapture(session, "android-camera-${state.epoch.id}", state.epoch)
+                                val capture = state.captureId ?: api.attachCapture(session, BuildConfig.MEDIAMTX_STREAM_PATH, state.epoch)
                                 state = state.copy(sessionId = session, blockId = block, captureId = capture, statusDetail = "Block created. Hold a still full-body stance for server reacquisition.")
-                                eventClient.start(lifecycleScope, session, { tone, reason -> feedback.verdict(tone); if (state.debugSpeakVerdicts) feedback.speakWhenSafe(reason) }, { cue -> state = state.copy(activeCue = cue); feedback.speakWhenSafe(cue.text) }, { message -> state = state.copy(statusDetail = message) })
+                                eventClient.start(
+                                    lifecycleScope,
+                                    session,
+                                    { verdict ->
+                                        feedback.verdict(verdict.tone)
+                                        if (state.debugSpeakVerdicts) feedback.speakWhenSafe(verdict.reasonCode)
+                                    },
+                                    { cue -> state = state.copy(activeCue = cue) },
+                                    { cue -> feedback.speakWhenSafe(cue.text) },
+                                    { message -> state = state.copy(statusDetail = message) },
+                                )
                             } catch (e: Exception) { state = state.copy(readiness = CaptureReadiness.ERROR, statusDetail = e.message ?: "API failed") }
                         }
                     }, enabled = api.configured) { Text("Create / switch block") }
@@ -107,7 +136,7 @@ class MainActivity : ComponentActivity() {
                         lifecycleScope.launch {
                             when (val result = publisher.start(state.epoch)) {
                                 is PublisherResult.Connecting -> {
-                                    state.captureId?.let { api.reportSourceHealth(it, state.epoch, "connecting", "SRT handshaking to ${result.sourceId}") }
+                                    state.captureId?.let { api.reportSourceHealth(it, "degraded", "SRT handshaking to ${result.sourceId}") }
                                     state = state.copy(readiness = CaptureReadiness.CONNECTING, statusDetail = "SRT publisher connecting…")
                                 }
                                 is PublisherResult.Blocked -> state = state.copy(readiness = CaptureReadiness.PUBLISHER_UNAVAILABLE, statusDetail = result.reason)

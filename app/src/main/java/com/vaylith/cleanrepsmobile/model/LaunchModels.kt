@@ -1,7 +1,5 @@
 package com.vaylith.cleanrepsmobile.model
 
-import java.util.UUID
-
 /** Mirrors clean-reps million-kicks-launch.v1.json; official count is server-owned. */
 enum class KickSide { RIGHT, LEFT }
 enum class CaptureReadiness { NOT_CONFIGURED, PUBLISHER_UNAVAILABLE, CONNECTING, LIVE, RECONNECTING, STOPPED, ERROR }
@@ -15,12 +13,21 @@ data class BlockSelection(
     val cameraProfile: String = "fixed_full_body_oblique_v1",
 )
 
-data class SourceEpoch(val id: String = UUID.randomUUID().toString())
+/**
+ * Capture epochs are monotonically increasing, non-negative integers. This is
+ * intentionally compatible with the server's CaptureSession contract; a UUID
+ * is not valid sourceEpoch wire data.
+ */
+data class SourceEpoch(val value: Long = 0) {
+    init { require(value >= 0) { "source epoch must be non-negative" } }
+    fun next(): SourceEpoch = SourceEpoch(value + 1)
+    val displayId: String get() = value.toString()
+}
 
 data class AthleteCue(
     val id: String,
     val text: String,
-    val priority: String,
+    val priority: Int,
     val kind: String,
     val safeAfterKickEventId: String?,
 )

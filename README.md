@@ -10,18 +10,18 @@ The app reports `CONNECTING` until the SRT handshake succeeds and only reports `
 
 ## Build
 
-The repository has a pinned Gradle wrapper (8.11.1), AGP 8.7.3, JDK 17, and a GitHub Actions workflow that builds a downloadable `clean-reps-mobile-debug-apk` artifact on every sprint-branch push. Locally, install Android SDK platform 35 and build with:
+The repository has a pinned Gradle wrapper (8.11.1), AGP 8.7.3, JDK 17, and a GitHub Actions workflow that builds a downloadable `clean-reps-mobile-debug-apk` artifact on every sprint-branch push. GitHub Actions is presently account-billing locked; use the deterministic user-space bootstrap/build scripts on the AX41 or another Linux build host instead:
 
 ```bash
-./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+tools/build-debug-apk.sh
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-If Gradle is not installed, use Android Studio’s Gradle wrapper generation once (`gradle wrapper --gradle-version 8.11.1`) and then `./gradlew :app:assembleDebug`. The expected APK path is `app/build/outputs/apk/debug/app-debug.apk`.
+`tools/bootstrap-android-sdk.sh` downloads the exact Android command-line tools revision, verifies its SHA-256, accepts licenses and installs only platform-tools, API 35 and build-tools 35.0.0. `tools/build-debug-apk.sh` runs unit tests, lint and `assembleDebug`, then writes `app/build/outputs/apk/debug/app-debug.apk.sha256`. The expected APK path is `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Launch config
 
-Do not commit these values. Provide them in `~/.gradle/gradle.properties` and replace the empty debug BuildConfig fields via a local build flavor or CI secret injection:
+Do not commit these values. Provide them as process environment variables to `tools/build-debug-apk.sh` (or as matching untracked Gradle properties):
 
 - `CHALLENGE_API_BASE_URL`: private/Tailscale Clean Reps API URL, no trailing slash.
 - `MEDIAMTX_SRT_HOST`: AX41 tailnet hostname/IP, optionally followed by `:8890`.

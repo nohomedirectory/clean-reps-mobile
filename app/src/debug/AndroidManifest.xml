@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The sprint API is intentionally private on the tailnet and presently
+         speaks HTTP. Never make this a release-manifest setting. -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>

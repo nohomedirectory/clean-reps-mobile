@@ -25,11 +25,11 @@ class ChallengeApi(private val baseUrl: String) {
 
     suspend fun attachCapture(sessionId: String, sourceId: String, epoch: SourceEpoch): String = post(
         "/v1/challenge-sessions/$sessionId/captures",
-        """{"sourceId":${json(sourceId)},"sourceEpoch":${json(epoch.id)},"status":"starting"}""",
+        """{"sourceId":${json(sourceId)},"sourceEpoch":${epoch.value}}""",
     ).requireId()
 
-    suspend fun reportSourceHealth(captureId: String, epoch: SourceEpoch, status: String, detail: String) {
-        post("/v1/captures/$captureId/health", """{"sourceEpoch":${json(epoch.id)},"status":${json(status)},"detail":${json(detail)}}""")
+    suspend fun reportSourceHealth(captureId: String, status: String, detail: String) {
+        post("/v1/captures/$captureId/health", """{"status":${json(status)},"detail":${json(detail)}}""")
     }
 
     private suspend fun post(path: String, body: String): ApiReply = withContext(Dispatchers.IO) {
