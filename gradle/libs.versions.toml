@@ -5,6 +5,7 @@ composeBom = "2024.12.01"
 activityCompose = "1.9.3"
 lifecycle = "2.8.7"
 camerax = "1.4.1"
+rootEncoder = "2.8.0"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version = "1.15.0" }
@@ -20,6 +21,8 @@ camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "ca
 camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
 camerax-video = { module = "androidx.camera:camera-video", version.ref = "camerax" }
 camerax-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
+root-encoder = { module = "com.github.pedroSG94.RootEncoder:library", version.ref = "rootEncoder" }
+junit = { module = "junit:junit", version = "4.13.2" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

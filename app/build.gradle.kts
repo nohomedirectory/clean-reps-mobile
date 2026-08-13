@@ -16,9 +16,14 @@ android {
         buildConfigField("String", "CHALLENGE_API_BASE_URL", quoted(providers.gradleProperty("challengeApiBaseUrl").orElse("").get()))
         buildConfigField("String", "MEDIAMTX_SRT_HOST", quoted(providers.gradleProperty("mediaMtxSrtHost").orElse("").get()))
         buildConfigField("String", "MEDIAMTX_SRT_PASSPHRASE", quoted(providers.gradleProperty("mediaMtxSrtPassphrase").orElse("").get()))
+        buildConfigField("String", "MEDIAMTX_PUBLISH_PASSWORD", quoted(providers.gradleProperty("mediaMtxPublishPassword").orElse("").get()))
         buildConfigField("String", "MEDIAMTX_STREAM_PATH", "\"million-kicks-camera\"")
     }
     buildFeatures { compose = true; buildConfig = true }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
 }
 
 fun quoted(value: String) = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
@@ -37,5 +42,7 @@ dependencies {
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.video)
     implementation(libs.camerax.view)
+    implementation(libs.root.encoder)
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation(libs.junit)
 }

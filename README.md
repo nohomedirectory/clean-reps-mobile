@@ -4,16 +4,16 @@ Native Android client for the Million Kick Challenge gym baseline. It owns the p
 
 ## Current sprint reality
 
-The app is a buildable CameraX/Compose client. It previews and records an app-private device-local safety clip while the Activity is running; it can create sessions, blocks and capture attachments against the Clean Reps v1 endpoints after configuration. `CanonicalSourcePublisher` intentionally has no SRT implementation yet: Android does not ship an SRT encoder/publisher, and reporting a fake source would undermine the challenge. Until a real vetted SRT/WebRTC publisher is supplied, readiness remains **BLOCKED: source publisher unavailable** and the app will not claim it is contributing to MediaMTX.
+The app uses [RootEncoder 2.8.0](https://github.com/pedroSG94/RootEncoder)'s Android-native camera2/H.264/AAC/SRT implementation. It previews, publishes one authenticated SRT contribution to MediaMTX, and writes an app-private local MP4 safety spool while capture is active. It does not run a second CameraX graph and it never publishes separately to a recorder, analyzer or broadcaster. The source path is fixed by contract as `million-kicks-camera`; MediaMTX performs the server-side fan-out.
 
-That means this commit is useful for camera framing, block/session contract testing, local audio and API wiring, but **does not clear the gym acceptance gate for canonical server video**. The source path is fixed by contract as `million-kicks-camera`.
+The app reports `CONNECTING` until the SRT handshake succeeds and only reports `LIVE` from the transport success callback. A transport discontinuity creates a new `SourceEpoch` before retrying the same canonical MediaMTX path. Missing configuration blocks capture rather than falsely claiming a live source.
 
 ## Build
 
-Install Android Studio (JDK 17) and Android SDK platform 35, then from this repository:
+The repository has a pinned Gradle wrapper (8.11.1), AGP 8.7.3, JDK 17, and a GitHub Actions workflow that builds a downloadable `clean-reps-mobile-debug-apk` artifact on every sprint-branch push. Locally, install Android SDK platform 35 and build with:
 
 ```bash
-gradle :app:assembleDebug
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -24,16 +24,17 @@ If Gradle is not installed, use Android Studio’s Gradle wrapper generation onc
 Do not commit these values. Provide them in `~/.gradle/gradle.properties` and replace the empty debug BuildConfig fields via a local build flavor or CI secret injection:
 
 - `CHALLENGE_API_BASE_URL`: private/Tailscale Clean Reps API URL, no trailing slash.
-- `MEDIAMTX_SRT_HOST` and `MEDIAMTX_SRT_PASSPHRASE`: supplied only when a real publisher is integrated.
+- `MEDIAMTX_SRT_HOST`: AX41 tailnet hostname/IP, optionally followed by `:8890`.
+- `MEDIAMTX_SRT_PASSPHRASE` and `MEDIAMTX_PUBLISH_PASSWORD`: existing Cloud OBS SRT transport and publisher credentials.
 - path is contractually `million-kicks-camera`.
 
-The app intentionally blocks source readiness without all required configuration **and** a real publisher. Session/block controls still make contract calls with an idempotency key.
+The app intentionally blocks source readiness without all required configuration. Session/block controls make contract calls with an idempotency key. Do not put those values in the repository or in an APK intended for distribution beyond the private gym device.
 
 ## Gym operator path (once publisher is integrated)
 
 1. Open the app, grant Camera and Microphone.
 2. On tripod, choose **Side Kick / Right** and verify both feet are visible in the preview.
-3. Create/attach the session and wait for `SOURCE LIVE`; do not start official counting while blocked.
+3. Create/attach the session, then start capture and wait for `SOURCE LIVE`; do not start official counting while blocked or reconnecting.
 4. Start capture. A reconnect creates a new `sourceEpoch`; it never creates a second concurrent source.
 5. Connect an earbud, run **Audio test**, then enable Debug verdict speech only for alignment testing.
 6. For left-side work, stop kicking, select **Side Kick / Left**, wait for reacquisition/visibility from the server, then continue.
