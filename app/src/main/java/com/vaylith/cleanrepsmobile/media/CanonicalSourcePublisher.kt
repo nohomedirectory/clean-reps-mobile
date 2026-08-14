@@ -57,7 +57,7 @@ interface PublisherListener {
 enum class PublisherStatus { PREVIEW_READY, CONNECTING, LIVE, RECONNECTING, STOPPED, ERROR }
 
 /**
- * RootEncoder 2.8.0 supplies camera2, H.264/AAC hardware encoding and SRT in one
+ * RootEncoder 2.7.0 supplies camera2, H.264/AAC hardware encoding and SRT in one
  * capture graph. Keeping this graph singular prevents the phone from creating
  * independent recorder/analyzer/broadcast contributions.
  */
