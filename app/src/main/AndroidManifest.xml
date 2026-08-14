@@ -2,6 +2,9 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The gym path needs a camera, but keep the debug APK installable on a
+         device without one so it can surface a truthful readiness failure. -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <application android:allowBackup="false" android:label="Clean Reps Mobile" android:theme="@style/Theme.CleanReps">
         <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="portrait">
             <intent-filter>
