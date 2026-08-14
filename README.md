@@ -4,7 +4,7 @@ Native Android client for the Million Kick Challenge gym baseline. It owns the p
 
 ## Current sprint reality
 
-The app uses [RootEncoder 2.8.0](https://github.com/pedroSG94/RootEncoder)'s Android-native camera2/H.264/AAC/SRT implementation. It previews, publishes one authenticated SRT contribution to MediaMTX, and writes an app-private local MP4 safety spool while capture is active. It does not run a second CameraX graph and it never publishes separately to a recorder, analyzer or broadcaster. The source path is fixed by contract as `million-kicks-camera`; MediaMTX performs the server-side fan-out.
+The app uses [RootEncoder 2.7.0](https://github.com/pedroSG94/RootEncoder)'s Android-native camera2/H.264/AAC/SRT implementation. It previews, publishes one authenticated SRT contribution to MediaMTX, and writes an app-private local MP4 safety spool while capture is active. It does not run a second CameraX graph and it never publishes separately to a recorder, analyzer or broadcaster. The source path is fixed by contract as `million-kicks-camera`; MediaMTX performs the server-side fan-out.
 
 The app reports `CONNECTING` until the SRT handshake succeeds and only reports `LIVE` from the transport success callback. A transport discontinuity creates a new `SourceEpoch` before retrying the same canonical MediaMTX path. Missing configuration blocks capture rather than falsely claiming a live source.
 
@@ -30,7 +30,7 @@ Do not commit these values. Provide them as process environment variables to `to
 
 The app intentionally blocks source readiness without all required configuration. Session/block controls make contract calls with an idempotency key. Do not put those values in the repository or in an APK intended for distribution beyond the private gym device.
 
-## Gym operator path (once publisher is integrated)
+## Gym operator path
 
 1. Open the app, grant Camera and Microphone.
 2. On tripod, choose **Side Kick / Right** and verify both feet are visible in the preview.
