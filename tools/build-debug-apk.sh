@@ -31,22 +31,29 @@ gradle_status=$?
 set -e
 if [[ $gradle_status -ne 0 ]]; then
   printf 'GRADLE_FAILURE_CONTEXT_BEGIN\n'
-  # Keep this deliberately compact: the host coordination surface retains a
-  # short command tail. Gradle's surrounding stack trace can otherwise push
-  # the compiler error out of that tail.
+  # The coordination surface retains a short command tail. Keep the emitted
+  # context to at most 20 redacted lines so the actual tool error survives.
   redact_gradle_log() {
     sed -E \
         -e 's#srt://[^[:space:]]+#srt://<redacted>#g' \
         -e 's#(passphrase|streamid|MEDIAMTX_SRT_PASSPHRASE|MEDIAMTX_PUBLISH_PASSWORD)[=:][^[:space:]&]+#\1=<redacted>#g' \
         -e 's#(CHALLENGE_API_BASE_URL)[=:][^[:space:]]+#\1=<redacted>#g'
   }
-  grep -E '(^FAILURE:|^\* What went wrong:|^e: |(^|[[:space:]])error:|^ERROR:|^> Task .*FAILED|^Execution failed for task)' "$gradle_log" \
-    | tail -n 60 | redact_gradle_log || true
-  # Preserve the raw tail too: some Android tools emit their only useful cause
-  # as a wrapped line that has none of the conventional error prefixes above.
-  printf 'GRADLE_FAILURE_LOG_TAIL_BEGIN\n'
-  tail -n 100 "$gradle_log" | redact_gradle_log || true
-  printf 'GRADLE_FAILURE_LOG_TAIL_END\n'
+  # Extract the final useful error section and its immediate context. `awk`
+  # reports only that 20-line window, never the Gradle stack trace tail.
+  awk '
+    /FAILURE:|What went wrong:|^e: |(^|[[:space:]])error:|^ERROR:|Caused by:|^> Task .*FAILED|Execution failed for task/ {
+      start = NR - 3
+    }
+    { lines[NR] = $0 }
+    END {
+      if (start < 1) start = NR - 19
+      if (start < 1) start = 1
+      end = start + 19
+      if (end > NR) end = NR
+      for (line = start; line <= end; line++) print lines[line]
+    }
+  ' "$gradle_log" | redact_gradle_log || true
   printf 'GRADLE_FAILURE_CONTEXT_END\n'
   exit "$gradle_status"
 fi
