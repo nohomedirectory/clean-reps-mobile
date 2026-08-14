@@ -48,7 +48,14 @@ dependencies {
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.video)
     implementation(libs.camerax.view)
-    implementation(libs.root.encoder)
+    implementation(libs.root.encoder) {
+        // SrtStream is implemented by RootEncoder's library module. Do not
+        // package transports that the single canonical SRT publisher cannot
+        // use; MediaMTX handles all server-side fan-out.
+        exclude(group = "com.github.pedroSG94.RootEncoder", module = "rtmp")
+        exclude(group = "com.github.pedroSG94.RootEncoder", module = "rtsp")
+        exclude(group = "com.github.pedroSG94.RootEncoder", module = "udp")
+    }
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation(libs.junit)
 }
