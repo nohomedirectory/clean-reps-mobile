@@ -21,7 +21,10 @@ camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "ca
 camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
 camerax-video = { module = "androidx.camera:camera-video", version.ref = "camerax" }
 camerax-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
-root-encoder = { module = "com.github.pedroSG94.RootEncoder:library", version.ref = "rootEncoder" }
+# The umbrella `library` artifact imports every transport (including WHIP/RTSP,
+# which currently requires API 37). The launch app publishes only SRT, so pin
+# the transport module that contains SrtStream and avoids unrelated API floors.
+root-encoder = { module = "com.github.pedroSG94.RootEncoder:srt", version.ref = "rootEncoder" }
 junit = { module = "junit:junit", version = "4.13.2" }
 
 [plugins]
