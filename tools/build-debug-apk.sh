@@ -31,8 +31,11 @@ gradle_status=$?
 set -e
 if [[ $gradle_status -ne 0 ]]; then
   printf 'GRADLE_FAILURE_CONTEXT_BEGIN\n'
-  grep -E -B 12 -A 80 '(^FAILURE:|^\* What went wrong:|^e: |^ERROR:|^Caused by:|^> Task )' "$gradle_log" \
-    | tail -n 200 \
+  # Keep this deliberately compact: the host coordination surface retains a
+  # short command tail. Gradle's surrounding stack trace can otherwise push
+  # the compiler error out of that tail.
+  grep -E '(^FAILURE:|^\* What went wrong:|^e: |(^|[[:space:]])error:|^ERROR:|^> Task .*FAILED|^Execution failed for task)' "$gradle_log" \
+    | tail -n 60 \
     | sed -E \
         -e 's#srt://[^[:space:]]+#srt://<redacted>#g' \
         -e 's#(passphrase|streamid|MEDIAMTX_SRT_PASSPHRASE|MEDIAMTX_PUBLISH_PASSWORD)[=:][^[:space:]&]+#\1=<redacted>#g' \
