@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -47,6 +48,7 @@ class MainActivity : ComponentActivity() {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable private fun MobileScreen() {
         @Suppress("UNUSED_VARIABLE") val permissionRefresh = permissionGeneration
         var state by remember { mutableStateOf(AppState()) }
@@ -97,19 +99,19 @@ class MainActivity : ComponentActivity() {
                 },
             )
         }
-        Scaffold(topBar = { TopAppBar(title = { Text("Clean Reps · Gym Baseline") }) }) { pad ->
+        Scaffold(topBar = { TopAppBar(title = { Text("Clean Reps Â· Gym Baseline") }) }) { pad ->
             Column(Modifier.padding(pad).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (hasPermissions()) {
                     AndroidView(factory = { SurfaceView(it).also(publisher::attachPreview) }, modifier = Modifier.fillMaxWidth().height(340.dp))
                 } else {
                     Card { Text("Camera and microphone permission are required. Grant permission, then reopen this screen.", Modifier.padding(12.dp)) }
                 }
-                Text("${state.selection.technique.replace('_', ' ')} / ${state.selection.side} · epoch ${state.epoch.displayId}")
+                Text("${state.selection.technique.replace('_', ' ')} / ${state.selection.side} Â· epoch ${state.epoch.displayId}")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.RIGHT), blockId = null, statusDetail = "Right block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick · Right") }
-                    Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.LEFT), blockId = null, statusDetail = "Left block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick · Left") }
+                    Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.RIGHT), blockId = null, statusDetail = "Right block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick Â· Right") }
+                    Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.LEFT), blockId = null, statusDetail = "Left block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick Â· Left") }
                 }
-                Text("Source: ${state.readiness} — ${state.statusDetail}")
+                Text("Source: ${state.readiness} â ${state.statusDetail}")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
                         lifecycleScope.launch {
@@ -137,7 +139,7 @@ class MainActivity : ComponentActivity() {
                             when (val result = publisher.start(state.epoch)) {
                                 is PublisherResult.Connecting -> {
                                     state.captureId?.let { api.reportSourceHealth(it, "degraded", "SRT handshaking to ${result.sourceId}") }
-                                    state = state.copy(readiness = CaptureReadiness.CONNECTING, statusDetail = "SRT publisher connecting…")
+                                    state = state.copy(readiness = CaptureReadiness.CONNECTING, statusDetail = "SRT publisher connectingâ¦")
                                 }
                                 is PublisherResult.Blocked -> state = state.copy(readiness = CaptureReadiness.PUBLISHER_UNAVAILABLE, statusDetail = result.reason)
                                 is PublisherResult.Failed -> state = state.copy(readiness = CaptureReadiness.ERROR, statusDetail = result.reason)
