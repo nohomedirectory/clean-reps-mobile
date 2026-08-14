@@ -39,14 +39,18 @@ if [[ $gradle_status -ne 0 ]]; then
         -e 's#(passphrase|streamid|MEDIAMTX_SRT_PASSPHRASE|MEDIAMTX_PUBLISH_PASSWORD)[=:][^[:space:]&]+#\1=<redacted>#g' \
         -e 's#(CHALLENGE_API_BASE_URL)[=:][^[:space:]]+#\1=<redacted>#g'
   }
-  # Extract the final useful error section and its immediate context. `awk`
-  # reports only that 20-line window, never the Gradle stack trace tail.
+  # Prefer a compiler/AAPT diagnostic over Gradle's later generic stack trace.
+  # `awk` reports only one 20-line window, never the Gradle stack trace tail.
   awk '
-    /FAILURE:|What went wrong:|^e: |(^|[[:space:]])error:|^ERROR:|Caused by:|^> Task .*FAILED|Execution failed for task/ {
-      start = NR - 3
+    /^e: |(^|[[:space:]])error:|^ERROR:/ {
+      diagnostic = NR - 3
+    }
+    /FAILURE:|What went wrong:|Caused by:|^> Task .*FAILED|Execution failed for task/ {
+      fallback = NR - 3
     }
     { lines[NR] = $0 }
     END {
+      start = diagnostic ? diagnostic : fallback
       if (start < 1) start = NR - 19
       if (start < 1) start = 1
       end = start + 19
