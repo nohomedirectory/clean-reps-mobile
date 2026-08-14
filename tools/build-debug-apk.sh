@@ -44,6 +44,10 @@ if [[ $gradle_status -ne 0 ]]; then
   set -e
   diagnostic_log="$compiler_log"
   if [[ $compiler_status -eq 0 ]]; then diagnostic_log="$gradle_log"; fi
+  # Lint writes a concise text report even when the aggregate build fails.
+  # Prefer it over Gradle's generic task summary when it is present.
+  lint_report="app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt"
+  if [[ -s "$lint_report" ]]; then diagnostic_log="$lint_report"; fi
   printf 'GRADLE_FAILURE_CONTEXT_BEGIN\n'
   # The coordination surface retains a short command tail. Keep the emitted
   # context to at most 20 redacted lines so the actual tool error survives.
@@ -56,7 +60,7 @@ if [[ $gradle_status -ne 0 ]]; then
   # Prefer compiler/AAPT lines over Gradle's generic stack trace. These twelve
   # lines fit in the coordination tail and preserve every relevant source
   # location when Kotlin reports multiple compile errors.
-  diagnostics="$(grep -E '(^e: |[[:space:]]error:|\.kt:)' "$diagnostic_log" | tail -n 12 || true)"
+  diagnostics="$(grep -Ei '(^e: |[[:space:]]error:|\.kt:)' "$diagnostic_log" | tail -n 12 || true)"
   if [[ -n "$diagnostics" ]]; then
     printf '%s\n' "$diagnostics" | redact_gradle_log
   else
