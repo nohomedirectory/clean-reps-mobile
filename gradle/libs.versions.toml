@@ -1,6 +1,9 @@
 [versions]
 agp = "8.7.3"
-kotlin = "2.0.21"
+# RootEncoder 2.7.0 publishes Kotlin metadata 2.2.0. Kotlin 2.2.21 is
+# compatible with the pinned Gradle 8.11.1/AGP 8.7.3 build while reading that
+# metadata; keep the Android API and AGP pins unchanged for the gym baseline.
+kotlin = "2.2.21"
 composeBom = "2024.12.01"
 activityCompose = "1.9.3"
 lifecycle = "2.8.7"
