@@ -34,13 +34,19 @@ if [[ $gradle_status -ne 0 ]]; then
   # Keep this deliberately compact: the host coordination surface retains a
   # short command tail. Gradle's surrounding stack trace can otherwise push
   # the compiler error out of that tail.
-  grep -E '(^FAILURE:|^\* What went wrong:|^e: |(^|[[:space:]])error:|^ERROR:|^> Task .*FAILED|^Execution failed for task)' "$gradle_log" \
-    | tail -n 60 \
-    | sed -E \
+  redact_gradle_log() {
+    sed -E \
         -e 's#srt://[^[:space:]]+#srt://<redacted>#g' \
         -e 's#(passphrase|streamid|MEDIAMTX_SRT_PASSPHRASE|MEDIAMTX_PUBLISH_PASSWORD)[=:][^[:space:]&]+#\1=<redacted>#g' \
-        -e 's#(CHALLENGE_API_BASE_URL)[=:][^[:space:]]+#\1=<redacted>#g' \
-    || true
+        -e 's#(CHALLENGE_API_BASE_URL)[=:][^[:space:]]+#\1=<redacted>#g'
+  }
+  grep -E '(^FAILURE:|^\* What went wrong:|^e: |(^|[[:space:]])error:|^ERROR:|^> Task .*FAILED|^Execution failed for task)' "$gradle_log" \
+    | tail -n 60 | redact_gradle_log || true
+  # Preserve the raw tail too: some Android tools emit their only useful cause
+  # as a wrapped line that has none of the conventional error prefixes above.
+  printf 'GRADLE_FAILURE_LOG_TAIL_BEGIN\n'
+  tail -n 100 "$gradle_log" | redact_gradle_log || true
+  printf 'GRADLE_FAILURE_LOG_TAIL_END\n'
   printf 'GRADLE_FAILURE_CONTEXT_END\n'
   exit "$gradle_status"
 fi
