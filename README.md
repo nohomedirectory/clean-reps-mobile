@@ -49,4 +49,4 @@ The canonical schema and semantics live in `clean-reps/docs/tonight-sprint/milli
 - `POST /v1/captures/{captureId}/health`
 - `GET /v1/challenge-sessions/{sessionId}/stream`
 
-All mutations send `Idempotency-Key`. Verdict/cue event parsing is deliberately isolated in `ChallengeApi` for replacement by an SSE client when the server event envelope is finalized.
+All mutations send `Idempotency-Key`. `ChallengeApi` consumes the canonical `challenge-state` SSE stream, deduplicates `latestVerdict` by adjudication ID for tones, and surfaces the nested `activeCue` for safe-window TTS; neither path has count authority.
