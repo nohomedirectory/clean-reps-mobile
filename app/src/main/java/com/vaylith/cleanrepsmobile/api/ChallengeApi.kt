@@ -1,6 +1,7 @@
 package com.vaylith.cleanrepsmobile.api
 
 import com.vaylith.cleanrepsmobile.model.BlockSelection
+import com.vaylith.cleanrepsmobile.model.ManualEvidenceWindow
 import com.vaylith.cleanrepsmobile.model.SourceEpoch
 import java.io.BufferedReader
 import java.io.OutputStreamWriter
@@ -23,6 +24,10 @@ class ChallengeApi(private val baseUrl: String) {
         """{"technique":"${selection.technique}","side":"${selection.side.name.lowercase()}","targetContext":"${selection.targetContext}","intent":"${selection.intent}","cameraProfile":"${selection.cameraProfile}","reacquisition":true}""",
     ).requireId()
 
+    suspend fun markReacquired(sessionId: String, blockId: String) {
+        post("/v1/challenge-sessions/$sessionId/blocks/$blockId/reacquired", "{}")
+    }
+
     suspend fun attachCapture(sessionId: String, sourceId: String, epoch: SourceEpoch): String = post(
         "/v1/challenge-sessions/$sessionId/captures",
         """{"sourceId":${json(sourceId)},"sourceEpoch":${epoch.value}}""",
@@ -32,13 +37,37 @@ class ChallengeApi(private val baseUrl: String) {
         post("/v1/captures/$captureId/health", """{"status":${json(status)},"detail":${json(detail)}}""")
     }
 
-    private suspend fun post(path: String, body: String): ApiReply = withContext(Dispatchers.IO) {
+    /**
+     * Truthful alignment fallback: creates a durable event against the one raw
+     * source interval but supplies no invented pose evidence. The server must
+     * classify it evidence_failed until the Clean Reps review surface settles it.
+     */
+    suspend fun logManualAttempt(
+        sessionId: String,
+        blockId: String,
+        captureId: String,
+        sourceId: String,
+        epoch: SourceEpoch,
+        occurredAt: String,
+        window: ManualEvidenceWindow,
+    ): String {
+        val sourceReference = "mediamtx://$sourceId?sourceEpoch=${epoch.value}"
+        val body = """{"blockId":${json(blockId)},"captureSessionId":${json(captureId)},"sourceEpoch":${epoch.value},"occurredAt":${json(occurredAt)},"evidence":{"startMs":${window.startMs},"endMs":${window.endMs},"poseFrames":0,"athleteVisible":false,"supportFootVisible":false,"sourceUrl":${json(sourceReference)}}}"""
+        val idempotencyKey = "manual-attempt:$captureId:${epoch.value}:${window.endMs}"
+        return post(
+            "/v1/challenge-sessions/$sessionId/analysis/kick-events",
+            body,
+            idempotencyKey,
+        ).requireEventId()
+    }
+
+    private suspend fun post(path: String, body: String, idempotencyKey: String = UUID.randomUUID().toString()): ApiReply = withContext(Dispatchers.IO) {
         if (!configured) throw ApiException("CHALLENGE_API_BASE_URL is not configured")
         val connection = (URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; connectTimeout = 8_000; readTimeout = 12_000
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("Idempotency-Key", UUID.randomUUID().toString())
+            setRequestProperty("Idempotency-Key", idempotencyKey)
             doOutput = true
         }
         OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body) }
@@ -55,4 +84,8 @@ class ChallengeApi(private val baseUrl: String) {
 private data class ApiReply(val raw: String) {
     fun requireId(): String = Regex("\"id\"\\s*:\\s*\"([^\"]+)\"").find(raw)?.groupValues?.get(1)
         ?: throw ChallengeApi.ApiException("v1 response did not include id")
+
+    fun requireEventId(): String = Regex("\"event\"\\s*:\\s*\\{[^}]*\"id\"\\s*:\\s*\"([^\"]+)\"")
+        .find(raw)?.groupValues?.get(1)
+        ?: throw ChallengeApi.ApiException("v1 response did not include event id")
 }
