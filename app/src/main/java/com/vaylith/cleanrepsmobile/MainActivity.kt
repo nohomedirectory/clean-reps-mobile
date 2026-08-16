@@ -3,6 +3,7 @@ package com.vaylith.cleanrepsmobile
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.SurfaceView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -27,6 +28,7 @@ import com.vaylith.cleanrepsmobile.media.PublisherListener
 import com.vaylith.cleanrepsmobile.media.PublisherResult
 import com.vaylith.cleanrepsmobile.media.PublisherStatus
 import com.vaylith.cleanrepsmobile.model.*
+import java.time.Instant
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -66,7 +68,12 @@ class MainActivity : ComponentActivity() {
                             PublisherStatus.STOPPED -> CaptureReadiness.STOPPED
                             PublisherStatus.ERROR -> CaptureReadiness.ERROR
                         }
-                        state = state.copy(readiness = readiness, statusDetail = detail)
+                        val captureStartedAt = when (readiness) {
+                            CaptureReadiness.LIVE -> state.captureStartedAtElapsedMs ?: SystemClock.elapsedRealtime()
+                            CaptureReadiness.STOPPED, CaptureReadiness.ERROR -> null
+                            else -> state.captureStartedAtElapsedMs
+                        }
+                        state = state.copy(readiness = readiness, statusDetail = detail, captureStartedAtElapsedMs = captureStartedAt)
                         val serverHealth = when (readiness) {
                             CaptureReadiness.LIVE -> "healthy"
                             CaptureReadiness.CONNECTING, CaptureReadiness.RECONNECTING -> "degraded"
@@ -79,7 +86,7 @@ class MainActivity : ComponentActivity() {
                     }
                     override fun onSourceDiscontinuity(detail: String) = runOnUiThread {
                         val nextEpoch = state.epoch.next()
-                        state = state.copy(epoch = nextEpoch, captureId = null, readiness = CaptureReadiness.RECONNECTING, statusDetail = "New source epoch ${nextEpoch.displayId}: attaching capture before reconnect.")
+                        state = state.copy(epoch = nextEpoch, captureId = null, captureStartedAtElapsedMs = null, readiness = CaptureReadiness.RECONNECTING, statusDetail = "New source epoch ${nextEpoch.displayId}: attaching capture before reconnect.")
                         state.sessionId?.let { sessionId -> lifecycleScope.launch {
                             try {
                                 // A source epoch is immutable on CaptureSession. Reconnect is a
@@ -108,8 +115,8 @@ class MainActivity : ComponentActivity() {
                 }
                 Text("${state.selection.technique.replace('_', ' ')} / ${state.selection.side} - epoch ${state.epoch.displayId}")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.RIGHT), blockId = null, statusDetail = "Right block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick - Right") }
-                    Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.LEFT), blockId = null, statusDetail = "Left block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick - Left") }
+                    Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.RIGHT), blockId = null, blockReady = false, statusDetail = "Right block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick - Right") }
+                    Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.LEFT), blockId = null, blockReady = false, statusDetail = "Left block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick - Left") }
                 }
                 Text("Source: ${state.readiness} - ${state.statusDetail}")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -119,7 +126,13 @@ class MainActivity : ComponentActivity() {
                                 val session = state.sessionId ?: api.createSession("million-kicks-launch")
                                 val block = api.createBlock(session, state.selection)
                                 val capture = state.captureId ?: api.attachCapture(session, BuildConfig.MEDIAMTX_STREAM_PATH, state.epoch)
-                                state = state.copy(sessionId = session, blockId = block, captureId = capture, statusDetail = "Block created. Hold a still full-body stance for server reacquisition.")
+                                state = state.copy(
+                                    sessionId = session,
+                                    blockId = block,
+                                    blockReady = false,
+                                    captureId = capture,
+                                    statusDetail = "Block created. Hold still with your full body visible, then confirm framing.",
+                                )
                                 eventClient.start(
                                     lifecycleScope,
                                     session,
@@ -135,19 +148,64 @@ class MainActivity : ComponentActivity() {
                         }
                     }, enabled = api.configured) { Text("Create / switch block") }
                     Button(onClick = {
+                        val session = state.sessionId
+                        val block = state.blockId
+                        if (session != null && block != null) lifecycleScope.launch {
+                            try {
+                                api.markReacquired(session, block)
+                                state = state.copy(blockReady = true, statusDetail = "Framing confirmed. Block is ready.")
+                            } catch (error: Exception) {
+                                state = state.copy(blockReady = false, statusDetail = "Framing confirmation failed: ${error.message ?: "API failure"}")
+                            }
+                        }
+                    }, enabled = state.blockId != null) { Text("Confirm framing ready") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
                         lifecycleScope.launch {
                             when (val result = publisher.start(state.epoch)) {
                                 is PublisherResult.Connecting -> {
                                     state.captureId?.let { api.reportSourceHealth(it, "degraded", "SRT handshaking to ${result.sourceId}") }
                                     state = state.copy(readiness = CaptureReadiness.CONNECTING, statusDetail = "SRT publisher connecting...")
                                 }
-                                is PublisherResult.Blocked -> state = state.copy(readiness = CaptureReadiness.PUBLISHER_UNAVAILABLE, statusDetail = result.reason)
-                                is PublisherResult.Failed -> state = state.copy(readiness = CaptureReadiness.ERROR, statusDetail = result.reason)
-                                is PublisherResult.Live -> state = state.copy(readiness = CaptureReadiness.LIVE, statusDetail = "Canonical source live")
+                                is PublisherResult.Blocked -> state = state.copy(readiness = CaptureReadiness.PUBLISHER_UNAVAILABLE, captureStartedAtElapsedMs = null, statusDetail = result.reason)
+                                is PublisherResult.Failed -> state = state.copy(readiness = CaptureReadiness.ERROR, captureStartedAtElapsedMs = null, statusDetail = result.reason)
+                                is PublisherResult.Live -> state = state.copy(readiness = CaptureReadiness.LIVE, captureStartedAtElapsedMs = SystemClock.elapsedRealtime(), statusDetail = "Canonical source live")
                             }
                         }
-                    }, enabled = state.captureId != null && publisher.isAvailable && hasPermissions()) { Text("Start capture") }
-                    OutlinedButton(onClick = { lifecycleScope.launch { publisher.stop() }; state = state.copy(readiness = CaptureReadiness.STOPPED, statusDetail = "Capture stopping; wait for local spool finalization.") }) { Text("Stop") }
+                    }, enabled = state.blockReady && state.captureId != null && publisher.isAvailable && hasPermissions()) { Text("Start capture") }
+                    OutlinedButton(onClick = {
+                        lifecycleScope.launch { publisher.stop() }
+                        state = state.copy(readiness = CaptureReadiness.STOPPED, captureStartedAtElapsedMs = null, statusDetail = "Capture stopping; wait for local spool finalization.")
+                    }) { Text("Stop") }
+                    Button(onClick = {
+                        val session = state.sessionId
+                        val block = state.blockId
+                        val capture = state.captureId
+                        val startedAt = state.captureStartedAtElapsedMs
+                        if (session != null && block != null && capture != null && startedAt != null) lifecycleScope.launch {
+                            try {
+                                val window = manualEvidenceWindow(SystemClock.elapsedRealtime() - startedAt)
+                                val eventId = api.logManualAttempt(
+                                    session,
+                                    block,
+                                    capture,
+                                    BuildConfig.MEDIAMTX_STREAM_PATH,
+                                    state.epoch,
+                                    Instant.now().toString(),
+                                    window,
+                                )
+                                state = state.copy(
+                                    lastManualKickEventId = eventId,
+                                    statusDetail = "Manual attempt logged as evidence failed. Use Clean Reps review before crediting it.",
+                                )
+                            } catch (error: Exception) {
+                                state = state.copy(statusDetail = "Manual attempt failed: ${error.message ?: "API failure"}")
+                            }
+                        }
+                    }, enabled = state.readiness == CaptureReadiness.LIVE && state.blockReady && state.captureStartedAtElapsedMs != null) {
+                        Text("Log manual attempt")
+                    }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = feedback::audioTest) { Text("Audio test") }
