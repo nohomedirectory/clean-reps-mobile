@@ -86,7 +86,7 @@ class MainActivity : ComponentActivity() {
                     }
                     override fun onSourceDiscontinuity(detail: String) = runOnUiThread {
                         val nextEpoch = state.epoch.next()
-                        state = state.copy(epoch = nextEpoch, captureId = null, captureStartedAtElapsedMs = null, readiness = CaptureReadiness.RECONNECTING, statusDetail = "New source epoch ${nextEpoch.displayId}: attaching capture before reconnect.")
+                        state = state.copy(epoch = nextEpoch, blockReady = false, captureId = null, captureStartedAtElapsedMs = null, readiness = CaptureReadiness.RECONNECTING, statusDetail = "New source epoch ${nextEpoch.displayId}: attach capture, then confirm framing again.")
                         state.sessionId?.let { sessionId -> lifecycleScope.launch {
                             try {
                                 // A source epoch is immutable on CaptureSession. Reconnect is a
