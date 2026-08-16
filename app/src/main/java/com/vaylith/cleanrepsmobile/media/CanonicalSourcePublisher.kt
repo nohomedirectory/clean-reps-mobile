@@ -124,7 +124,12 @@ class MediaMtxSrtPublisher(
         listener.onPublisherStatus(PublisherStatus.LIVE, "Canonical SRT source is live: ${config.path}")
     }
     override fun onDisconnect() {
-        if (!intentionallyStopped) listener.onPublisherStatus(PublisherStatus.RECONNECTING, "Publisher disconnected; retrying canonical source.")
+        if (intentionallyStopped) return
+        if (!discontinuityReported) {
+            discontinuityReported = true
+            listener.onSourceDiscontinuity("SRT publisher disconnected.")
+        }
+        listener.onPublisherStatus(PublisherStatus.RECONNECTING, "Publisher disconnected; retrying canonical source.")
     }
     override fun onAuthError() = connectionFailed("MediaMTX rejected publisher authentication.", retry = false)
     override fun onAuthSuccess() = Unit
