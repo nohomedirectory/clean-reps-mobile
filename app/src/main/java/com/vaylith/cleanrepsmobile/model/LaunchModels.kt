@@ -24,6 +24,24 @@ data class SourceEpoch(val value: Long = 0) {
     val displayId: String get() = value.toString()
 }
 
+/**
+ * A manual alignment fallback references only the already-recording canonical
+ * source interval. It never asserts pose visibility and therefore enters the
+ * server ledger as evidence_failed until a human reviews the raw recording.
+ */
+data class ManualEvidenceWindow(val startMs: Long, val endMs: Long) {
+    init {
+        require(startMs >= 0) { "manual evidence start must be non-negative" }
+        require(endMs >= startMs) { "manual evidence end must follow start" }
+    }
+}
+
+fun manualEvidenceWindow(elapsedMs: Long, preRollMs: Long = 2_500): ManualEvidenceWindow {
+    require(elapsedMs >= 0) { "capture elapsed time must be non-negative" }
+    require(preRollMs >= 0) { "manual evidence pre-roll must be non-negative" }
+    return ManualEvidenceWindow(startMs = (elapsedMs - preRollMs).coerceAtLeast(0), endMs = elapsedMs)
+}
+
 data class AthleteCue(
     val id: String,
     val text: String,
@@ -35,7 +53,10 @@ data class AthleteCue(
 data class AppState(
     val sessionId: String? = null,
     val blockId: String? = null,
+    val blockReady: Boolean = false,
     val captureId: String? = null,
+    val captureStartedAtElapsedMs: Long? = null,
+    val lastManualKickEventId: String? = null,
     val selection: BlockSelection = BlockSelection(),
     val epoch: SourceEpoch = SourceEpoch(),
     val readiness: CaptureReadiness = CaptureReadiness.NOT_CONFIGURED,
