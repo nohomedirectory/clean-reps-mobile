@@ -8,6 +8,8 @@ The app uses [RootEncoder 2.7.0](https://github.com/pedroSG94/RootEncoder)'s And
 
 The app reports `CONNECTING` until the SRT handshake succeeds and only reports `LIVE` from the transport success callback. A transport discontinuity creates a new `SourceEpoch` before retrying the same canonical MediaMTX path. Missing configuration blocks capture rather than falsely claiming a live source.
 
+The deployed baseline does not yet decode the SRT source into live pose observations. For low-volume alignment only, **Log manual attempt** records a bounded interval against the one canonical raw source. It deliberately supplies no invented pose visibility, so Clean Reps creates an immutable `evidence_failed` event that can be credited only through the private manual-review surface after the recording is inspected. This fallback is not suitable for official high-volume counting.
+
 ## Build
 
 The repository has a pinned Gradle wrapper (8.11.1), AGP 8.7.3, JDK 17, and a GitHub Actions workflow that builds a downloadable `clean-reps-mobile-debug-apk` artifact on every sprint-branch push. GitHub Actions is presently account-billing locked; use the deterministic user-space bootstrap/build scripts on the AX41 or another Linux build host instead:
@@ -34,10 +36,11 @@ The app intentionally blocks source readiness without all required configuration
 
 1. Open the app, grant Camera and Microphone.
 2. On tripod, choose **Side Kick / Right** and verify both feet are visible in the preview.
-3. Create/attach the session, then start capture and wait for `SOURCE LIVE`; do not start official counting while blocked or reconnecting.
-4. Start capture. A reconnect creates a new `sourceEpoch`; it never creates a second concurrent source.
-5. Connect an earbud, run **Audio test**, then enable Debug verdict speech only for alignment testing.
-6. For left-side work, stop kicking, select **Side Kick / Left**, wait for reacquisition/visibility from the server, then continue.
+3. Choose **Create / switch block**, hold still, then choose **Confirm framing ready**.
+4. Start capture and wait for `SOURCE LIVE`; do not count while blocked or reconnecting.
+5. For each low-volume alignment rep, choose **Log manual attempt** after returning to stable stance. The event remains evidence-failed until reviewed in Clean Reps; the button never grants credit.
+6. Connect an earbud, run **Audio test**, then enable Debug verdict speech only for alignment testing.
+7. For left-side work, stop kicking, select **Side Kick / Left**, create the new block, hold still, confirm framing again, then continue. A reconnect creates a new `sourceEpoch`; it never creates a second concurrent source.
 
 ## Contract
 
