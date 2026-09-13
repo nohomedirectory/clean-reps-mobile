@@ -1,12 +1,17 @@
 package com.vaylith.cleanrepsmobile.model
 
 /** Mirrors clean-reps million-kicks-launch.v1.json; official count is server-owned. */
-enum class KickSide { RIGHT, LEFT }
+enum class KickTechnique(val wireValue: String, val label: String) {
+    TEEP("teep", "Teep"),
+    ROUNDHOUSE("roundhouse", "Roundhouse"),
+    SIDE_KICK("side_kick", "Side kick"),
+}
+enum class KickSide(val label: String) { RIGHT("Right"), LEFT("Left") }
 enum class CaptureReadiness { NOT_CONFIGURED, PUBLISHER_UNAVAILABLE, CONNECTING, LIVE, RECONNECTING, STOPPED, ERROR }
 enum class VerdictTone { ACCEPTED, REJECTED, NEUTRAL }
 
 data class BlockSelection(
-    val technique: String = "side_kick",
+    val technique: KickTechnique = KickTechnique.SIDE_KICK,
     val side: KickSide = KickSide.RIGHT,
     val targetContext: String = "bag",
     val intent: String = "challenge_counting",

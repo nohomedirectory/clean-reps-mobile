@@ -35,12 +35,14 @@ The app intentionally blocks source readiness without all required configuration
 ## Gym operator path
 
 1. Open the app, grant Camera and Microphone.
-2. On tripod, choose **Side Kick / Right** and verify both feet are visible in the preview.
-3. Choose **Create / switch block**, hold still, then choose **Confirm framing ready**.
+2. On tripod, choose the actual drill: **Teep**, **Roundhouse**, or **Side kick**, then **Right** or **Left**. Check the camera preview; a view of the body and target helps later review.
+3. Choose **Create / switch block**, then choose **Confirm framing ready** after checking the camera. Drill selection is locked while the block request is being saved, so the displayed drill and submitted metadata stay aligned.
 4. Start capture and wait for `SOURCE LIVE`; do not count while blocked or reconnecting.
 5. For each low-volume alignment rep, choose **Log manual attempt** after returning to stable stance. The event remains evidence-failed until reviewed in Clean Reps; the button never grants credit.
 6. Connect an earbud, run **Audio test**, then enable Debug verdict speech only for alignment testing.
-7. For left-side work, stop kicking, select **Side Kick / Left**, create the new block, hold still, confirm framing again, then continue. A reconnect creates a new `sourceEpoch`; it never creates a second concurrent source.
+7. To change technique or side, select the new drill, create its block, confirm framing again, then continue. Changing selection clears the previous local block readiness without changing the capture or source epoch. A reconnect creates a new `sourceEpoch`; it never creates a second concurrent source.
+
+These controls describe the drill being recorded. They do not select an automatic teep or roundhouse judge, add a cadence requirement, or certify kick quality. The live decoder-to-analysis bridge described above is still missing. Target context remains the existing `bag` value; this patch does not add target height or an air-drill selector.
 
 ## Contract
 

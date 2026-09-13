@@ -21,7 +21,7 @@ class ChallengeApi(private val baseUrl: String) {
 
     suspend fun createBlock(sessionId: String, selection: BlockSelection): String = post(
         "/v1/challenge-sessions/$sessionId/blocks",
-        """{"technique":"${selection.technique}","side":"${selection.side.name.lowercase()}","targetContext":"${selection.targetContext}","intent":"${selection.intent}","cameraProfile":"${selection.cameraProfile}","reacquisition":true}""",
+        """{"technique":"${selection.technique.wireValue}","side":"${selection.side.name.lowercase()}","targetContext":"${selection.targetContext}","intent":"${selection.intent}","cameraProfile":"${selection.cameraProfile}","reacquisition":true}""",
     ).requireId()
 
     suspend fun markReacquired(sessionId: String, blockId: String) {

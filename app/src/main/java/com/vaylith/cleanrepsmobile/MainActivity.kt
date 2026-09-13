@@ -9,6 +9,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -54,6 +56,7 @@ class MainActivity : ComponentActivity() {
     @Composable private fun MobileScreen() {
         @Suppress("UNUSED_VARIABLE") val permissionRefresh = permissionGeneration
         var state by remember { mutableStateOf(AppState()) }
+        var blockRequestInFlight by remember { mutableStateOf(false) }
         val publisher = remember {
             MediaMtxSrtPublisher(
                 this@MainActivity,
@@ -107,31 +110,64 @@ class MainActivity : ComponentActivity() {
             )
         }
         Scaffold(topBar = { TopAppBar(title = { Text("Clean Reps - Gym Baseline") }) }) { pad ->
-            Column(Modifier.padding(pad).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (hasPermissions()) {
                     AndroidView(factory = { SurfaceView(it).also(publisher::attachPreview) }, modifier = Modifier.fillMaxWidth().height(340.dp))
                 } else {
                     Card { Text("Camera and microphone permission are required. Grant permission, then reopen this screen.", Modifier.padding(12.dp)) }
                 }
-                Text("${state.selection.technique.replace('_', ' ')} / ${state.selection.side} - epoch ${state.epoch.displayId}")
+                Text("Selected drill: ${state.selection.technique.label} / ${state.selection.side.label} - epoch ${state.epoch.displayId}")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.RIGHT), blockId = null, blockReady = false, statusDetail = "Right block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick - Right") }
-                    Button(onClick = { state = state.copy(selection = state.selection.copy(side = KickSide.LEFT), blockId = null, blockReady = false, statusDetail = "Left block selected. Stop and hold still for server reacquisition.") }) { Text("Side kick - Left") }
+                    KickTechnique.entries.forEach { technique ->
+                        FilterChip(
+                            selected = state.selection.technique == technique,
+                            enabled = !blockRequestInFlight,
+                            onClick = {
+                                if (state.selection.technique != technique) state = state.copy(
+                                    selection = state.selection.copy(technique = technique),
+                                    blockId = null,
+                                    blockReady = false,
+                                    statusDetail = "${technique.label} selected. Create a new block to apply this drill.",
+                                )
+                            },
+                            label = { Text(technique.label) },
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    KickSide.entries.forEach { side ->
+                        FilterChip(
+                            selected = state.selection.side == side,
+                            enabled = !blockRequestInFlight,
+                            onClick = {
+                                if (state.selection.side != side) state = state.copy(
+                                    selection = state.selection.copy(side = side),
+                                    blockId = null,
+                                    blockReady = false,
+                                    statusDetail = "${side.label} selected. Create a new block to apply this drill.",
+                                )
+                            },
+                            label = { Text(side.label) },
+                        )
+                    }
                 }
                 Text("Source: ${state.readiness} - ${state.statusDetail}")
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
+                        val selection = state.selection
+                        blockRequestInFlight = true
+                        state = state.copy(blockId = null, blockReady = false)
                         lifecycleScope.launch {
                             try {
                                 val session = state.sessionId ?: api.createSession("million-kicks-launch")
-                                val block = api.createBlock(session, state.selection)
+                                val block = api.createBlock(session, selection)
                                 val capture = state.captureId ?: api.attachCapture(session, BuildConfig.MEDIAMTX_STREAM_PATH, state.epoch)
                                 state = state.copy(
                                     sessionId = session,
                                     blockId = block,
                                     blockReady = false,
                                     captureId = capture,
-                                    statusDetail = "Block created. Hold still with your full body visible, then confirm framing.",
+                                    statusDetail = "Block created for ${selection.technique.label} / ${selection.side.label}. Check the camera preview, then confirm framing.",
                                 )
                                 eventClient.start(
                                     lifecycleScope,
@@ -144,21 +180,29 @@ class MainActivity : ComponentActivity() {
                                     { cue -> feedback.speakWhenSafe(cue.text) },
                                     { message -> state = state.copy(statusDetail = message) },
                                 )
-                            } catch (e: Exception) { state = state.copy(readiness = CaptureReadiness.ERROR, statusDetail = e.message ?: "API failed") }
+                            } catch (e: Exception) {
+                                state = state.copy(readiness = CaptureReadiness.ERROR, statusDetail = e.message ?: "API failed")
+                            } finally {
+                                blockRequestInFlight = false
+                            }
                         }
-                    }, enabled = api.configured) { Text("Create / switch block") }
+                    }, enabled = api.configured && !blockRequestInFlight) { Text("Create / switch block") }
                     Button(onClick = {
                         val session = state.sessionId
                         val block = state.blockId
                         if (session != null && block != null) lifecycleScope.launch {
                             try {
                                 api.markReacquired(session, block)
-                                state = state.copy(blockReady = true, statusDetail = "Framing confirmed. Block is ready.")
+                                if (state.sessionId == session && state.blockId == block) {
+                                    state = state.copy(blockReady = true, statusDetail = "Framing confirmed. Block is ready.")
+                                }
                             } catch (error: Exception) {
-                                state = state.copy(blockReady = false, statusDetail = "Framing confirmation failed: ${error.message ?: "API failure"}")
+                                if (state.sessionId == session && state.blockId == block) {
+                                    state = state.copy(blockReady = false, statusDetail = "Framing confirmation failed: ${error.message ?: "API failure"}")
+                                }
                             }
                         }
-                    }, enabled = state.blockId != null) { Text("Confirm framing ready") }
+                    }, enabled = state.blockId != null && !blockRequestInFlight) { Text("Confirm framing ready") }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
