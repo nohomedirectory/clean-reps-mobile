@@ -29,6 +29,7 @@ data class MediaMtxSrtConfig(
     val publishPassword: String,
     val path: String = "million-kicks-camera",
 ) {
+    override fun toString() = "MediaMtxSrtConfig(configured=${validationError() == null}, path=$path)"
     fun validationError(): String? = when {
         host.isBlank() -> "MEDIAMTX_SRT_HOST is not configured"
         host.contains("://") || host.contains('/') || host.contains('?') -> "MEDIAMTX_SRT_HOST must be host or host:port only"
@@ -101,8 +102,12 @@ class MediaMtxSrtPublisher(
             }
             PublisherResult.Connecting(config.path)
         } catch (error: Exception) {
-            listener.onPublisherStatus(PublisherStatus.ERROR, "Publisher start failed: ${error.message ?: error.javaClass.simpleName}")
-            PublisherResult.Failed(error.message ?: "Publisher start failed")
+            // A partial start must not leave a hidden stream after the UI says stopped.
+            intentionallyStopped = true
+            runCatching { if (stream.isRecording) stream.stopRecord() }
+            runCatching { if (stream.isStreaming) stream.stopStream() }
+            listener.onPublisherStatus(PublisherStatus.ERROR, "Video could not start. Check the connection and camera permissions.")
+            PublisherResult.Failed("Video could not start. Check the connection and camera permissions.")
         }
     }
 
@@ -140,12 +145,17 @@ class MediaMtxSrtPublisher(
         if (intentionallyStopped) return
         if (!discontinuityReported) {
             discontinuityReported = true
-            listener.onSourceDiscontinuity(reason)
+            listener.onSourceDiscontinuity("Video transport interrupted.")
         }
         val retrying = retry && stream.getStreamClient().reTry(1_500, reason)
+        if (!retrying) {
+            intentionallyStopped = true
+            runCatching { if (stream.isRecording) stream.stopRecord() }
+            runCatching { if (stream.isStreaming) stream.stopStream() }
+        }
         listener.onPublisherStatus(
             if (retrying) PublisherStatus.RECONNECTING else PublisherStatus.ERROR,
-            if (retrying) "SRT unavailable; reconnecting with a new source epoch." else "Publisher failed: $reason",
+            if (retrying) "Video unavailable; reconnecting with a new source epoch." else "Video connection failed. Check the connection settings and retry.",
         )
     }
 
@@ -160,12 +170,16 @@ class MediaMtxSrtPublisher(
         if (stream.isRecording) return
         val directory = File(context.cacheDir, "safety-spool").apply { mkdirs() }
         val output = File(directory, "kick-${epoch.displayId}-${System.currentTimeMillis()}.mp4")
-        stream.startRecord(output.absolutePath) { status ->
-            when (status) {
-                RecordController.Status.RECORDING -> listener.onSafetyRecording("Local safety spool recording: ${output.name}")
-                RecordController.Status.STOPPED -> listener.onSafetyRecording("Local safety spool finalized: ${output.name}")
-                else -> Unit
+        try {
+            stream.startRecord(output.absolutePath) { status ->
+                when (status) {
+                    RecordController.Status.RECORDING -> listener.onSafetyRecording("Local safety recording is active.")
+                    RecordController.Status.STOPPED -> listener.onSafetyRecording("Local safety recording finalized.")
+                    else -> Unit
+                }
             }
+        } catch (_: Exception) {
+            listener.onSafetyRecording("Local safety recording is unavailable. Video contribution continues.")
         }
     }
 }

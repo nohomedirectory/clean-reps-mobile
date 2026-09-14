@@ -10,6 +10,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
 
 /**
  * Minimal SSE reader for the v1 /stream endpoint. Unknown events are ignored,
@@ -18,6 +19,7 @@ import kotlinx.coroutines.withContext
  */
 class ChallengeEventClient(private val baseUrl: String) {
     private var job: Job? = null
+    @Volatile private var activeConnection: HttpURLConnection? = null
     private var lastDeliveredAdjudicationId: String? = null
     private var lastSafeKickEventId: String? = null
     private val deliveredCueIds = mutableSetOf<String>()
@@ -28,21 +30,27 @@ class ChallengeEventClient(private val baseUrl: String) {
         onCue: (AthleteCue) -> Unit,
         onCueSafe: (AthleteCue) -> Unit,
         onError: (String) -> Unit,
+        onChallengeTotal: (Long) -> Unit = {},
     ) {
         stop()
         job = scope.launch(Dispatchers.IO) {
             while (isActive) {
+                var iterationConnection: HttpURLConnection? = null
                 try {
                     val connection = (URL(baseUrl.trimEnd('/') + "/v1/challenge-sessions/$sessionId/stream").openConnection() as HttpURLConnection).apply {
                         requestMethod = "GET"; readTimeout = 0; connectTimeout = 8_000
+                        instanceFollowRedirects = false
                         setRequestProperty("Accept", "text/event-stream")
                     }
+                    iterationConnection = connection
+                    activeConnection = connection
                     connection.inputStream.bufferedReader().useLines { lines ->
                         var data = StringBuilder()
                         lines.forEach { line ->
                             if (line.startsWith("data:")) data.append(line.removePrefix("data:").trim())
                             if (line.isBlank() && data.isNotEmpty()) {
                                 val payload = data.toString(); data = StringBuilder()
+                                ChallengeEventParser.parseChallengeTotal(payload)?.let { total -> scope.launch(Dispatchers.Main) { onChallengeTotal(total) } }
                                 ChallengeEventParser.parseVerdict(payload)?.let { verdict ->
                                     // OverlayState is a projection and can be repeated. A tone is
                                     // tied to a unique adjudication, never merely a changed count.
@@ -58,22 +66,29 @@ class ChallengeEventClient(private val baseUrl: String) {
                                     // unresolved. `safeAfterKickEventId == null` is displayed
                                     // but not spoken by this baseline; the server may later
                                     // declare a true interrupt policy explicitly.
-                                    if (cue.safeAfterKickEventId == lastSafeKickEventId && deliveredCueIds.add(cue.id)) {
+                                    if (cueHasResolvedSafeWindow(cue, lastSafeKickEventId) && deliveredCueIds.add(cue.id)) {
                                         scope.launch(Dispatchers.Main) { onCueSafe(cue) }
                                     }
                                 }
                             }
                         }
                     }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
                 } catch (error: Exception) {
                     withContext(Dispatchers.Main) { onError("Event stream reconnecting: ${error.message}") }
                     kotlinx.coroutines.delay(2_000)
+                } finally {
+                    iterationConnection?.disconnect()
+                    if (activeConnection === iterationConnection) activeConnection = null
                 }
             }
         }
     }
     fun stop() {
         job?.cancel()
+        activeConnection?.disconnect()
+        activeConnection = null
         job = null
         lastDeliveredAdjudicationId = null
         lastSafeKickEventId = null
@@ -91,8 +106,12 @@ data class MobileVerdictEvent(
     val reasonCode: String,
 )
 
+internal fun cueHasResolvedSafeWindow(cue: AthleteCue, completedKickEventId: String?): Boolean =
+    cue.safeAfterKickEventId != null && cue.safeAfterKickEventId == completedKickEventId
+
 /** V1 launch-envelope parser. It intentionally has no authority to infer a verdict. */
 object ChallengeEventParser {
+    fun parseChallengeTotal(json: String): Long? = longField(json, "challengeOfficialAcceptedCount")?.takeIf { it >= 0 }
     fun parseVerdict(json: String): MobileVerdictEvent? {
         // The server emits raw OverlayState. A settled decision is nested under
         // latestVerdict so it retains original kick attribution after delay or

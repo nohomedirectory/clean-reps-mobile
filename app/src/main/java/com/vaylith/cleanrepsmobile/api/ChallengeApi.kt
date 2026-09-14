@@ -21,16 +21,24 @@ class ChallengeApi(private val baseUrl: String) {
 
     suspend fun createBlock(sessionId: String, selection: BlockSelection): String = post(
         "/v1/challenge-sessions/$sessionId/blocks",
-        """{"technique":"${selection.technique.wireValue}","side":"${selection.side.name.lowercase()}","targetContext":"${selection.targetContext}","intent":"${selection.intent}","cameraProfile":"${selection.cameraProfile}","reacquisition":true}""",
+        blockRequestBody(selection),
     ).requireId()
 
     suspend fun markReacquired(sessionId: String, blockId: String) {
         post("/v1/challenge-sessions/$sessionId/blocks/$blockId/reacquired", "{}")
     }
 
+    suspend fun pausePractice(sessionId: String, blockId: String) {
+        post("/v1/challenge-sessions/$sessionId/blocks/$blockId/pause", "{}")
+    }
+
+    suspend fun resumePractice(sessionId: String, blockId: String) {
+        post("/v1/challenge-sessions/$sessionId/blocks/$blockId/resume", "{}")
+    }
+
     suspend fun attachCapture(sessionId: String, sourceId: String, epoch: SourceEpoch): String = post(
         "/v1/challenge-sessions/$sessionId/captures",
-        """{"sourceId":${json(sourceId)},"sourceEpoch":${epoch.value}}""",
+        """{"sourceId":${json(sourceId)},"sourceEpoch":${epoch.value},"purpose":"rehearsal"}""",
     ).requireId()
 
     suspend fun reportSourceHealth(captureId: String, status: String, detail: String) {
@@ -65,6 +73,7 @@ class ChallengeApi(private val baseUrl: String) {
         if (!configured) throw ApiException("CHALLENGE_API_BASE_URL is not configured")
         val connection = (URL(baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"; connectTimeout = 8_000; readTimeout = 12_000
+            instanceFollowRedirects = false
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Idempotency-Key", idempotencyKey)
@@ -79,6 +88,12 @@ class ChallengeApi(private val baseUrl: String) {
     }
 
     private fun json(value: String) = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
+
+/** The optional height describes the chosen drill; it is not a quality threshold. */
+internal fun blockRequestBody(selection: BlockSelection): String {
+    val height = selection.targetHeight?.let { ",\"targetHeight\":\"${it.wireValue}\"" }.orEmpty()
+    return """{"technique":"${selection.technique.wireValue}","side":"${selection.side.name.lowercase()}","targetContext":"${selection.targetContext.wireValue}"$height,"intent":"${selection.intent}","cameraProfile":"${selection.cameraProfile}","reacquisition":true}"""
 }
 
 private data class ApiReply(val raw: String) {

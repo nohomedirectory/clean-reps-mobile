@@ -4,9 +4,8 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-fun secret(gradleProperty: String, environmentVariable: String) =
-    providers.gradleProperty(gradleProperty)
-        .orElse(providers.environmentVariable(environmentVariable))
+fun secret(environmentVariable: String) =
+    providers.environmentVariable(environmentVariable)
         .orElse("")
         .get()
 
@@ -17,12 +16,12 @@ android {
         applicationId = "com.vaylith.cleanrepsmobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-sprint"
-        buildConfigField("String", "CHALLENGE_API_BASE_URL", quoted(secret("challengeApiBaseUrl", "CHALLENGE_API_BASE_URL")))
-        buildConfigField("String", "MEDIAMTX_SRT_HOST", quoted(secret("mediaMtxSrtHost", "MEDIAMTX_SRT_HOST")))
-        buildConfigField("String", "MEDIAMTX_SRT_PASSPHRASE", quoted(secret("mediaMtxSrtPassphrase", "MEDIAMTX_SRT_PASSPHRASE")))
-        buildConfigField("String", "MEDIAMTX_PUBLISH_PASSWORD", quoted(secret("mediaMtxPublishPassword", "MEDIAMTX_PUBLISH_PASSWORD")))
+        versionCode = 2
+        versionName = "0.2.0-rehearsal"
+        buildConfigField("String", "CHALLENGE_API_BASE_URL", quoted(secret("CHALLENGE_API_BASE_URL")))
+        buildConfigField("String", "MEDIAMTX_SRT_HOST", quoted(secret("MEDIAMTX_SRT_HOST")))
+        buildConfigField("String", "MEDIAMTX_SRT_PASSPHRASE", quoted(secret("MEDIAMTX_SRT_PASSPHRASE")))
+        buildConfigField("String", "MEDIAMTX_PUBLISH_PASSWORD", quoted(secret("MEDIAMTX_PUBLISH_PASSWORD")))
         buildConfigField("String", "MEDIAMTX_STREAM_PATH", "\"million-kicks-camera\"")
     }
     buildFeatures { compose = true; buildConfig = true }

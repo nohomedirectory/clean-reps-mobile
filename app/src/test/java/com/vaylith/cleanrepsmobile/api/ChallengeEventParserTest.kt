@@ -3,9 +3,23 @@ package com.vaylith.cleanrepsmobile.api
 import com.vaylith.cleanrepsmobile.model.VerdictTone
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import com.vaylith.cleanrepsmobile.model.AthleteCue
 import org.junit.Test
 
 class ChallengeEventParserTest {
+    @Test fun `missing safe window never triggers speech from a null equality`() {
+        val cue = AthleteCue("cue", "A delayed cue", 1, "technical", null)
+        assertFalse(cueHasResolvedSafeWindow(cue, null))
+        assertFalse(cueHasResolvedSafeWindow(cue.copy(safeAfterKickEventId = "kick-1"), "kick-2"))
+        assertTrue(cueHasResolvedSafeWindow(cue.copy(safeAfterKickEventId = "kick-1"), "kick-1"))
+    }
+    @Test fun `challenge total comes only from explicit cumulative server field`() {
+        assertEquals(123L, ChallengeEventParser.parseChallengeTotal("{\"officialAcceptedCount\":2,\"challengeOfficialAcceptedCount\":123}"))
+        assertNull(ChallengeEventParser.parseChallengeTotal("{\"officialAcceptedCount\":2}"))
+        assertNull(ChallengeEventParser.parseChallengeTotal("{\"challengeOfficialAcceptedCount\":-1}"))
+    }
     @Test fun `maps verdict semantics without confusing missing evidence and bad form`() {
         assertEquals(VerdictTone.ACCEPTED, verdict("accepted", "count_worthy").tone)
         assertEquals(VerdictTone.REJECTED, verdict("rejected", "balance_loss").tone)

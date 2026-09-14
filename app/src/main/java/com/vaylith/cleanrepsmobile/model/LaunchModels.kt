@@ -7,13 +7,20 @@ enum class KickTechnique(val wireValue: String, val label: String) {
     SIDE_KICK("side_kick", "Side kick"),
 }
 enum class KickSide(val label: String) { RIGHT("Right"), LEFT("Left") }
+enum class KickTarget(val wireValue: String, val label: String) {
+    AIR("air", "Air"), STANDING_BAG("standing_bag", "Standing bag"), HANGING_BAG("hanging_bag", "Hanging bag"),
+}
+enum class TargetHeight(val wireValue: String, val label: String) {
+    LOW("low", "Low"), MIDDLE("middle", "Middle"), HIGH("high", "High"),
+}
 enum class CaptureReadiness { NOT_CONFIGURED, PUBLISHER_UNAVAILABLE, CONNECTING, LIVE, RECONNECTING, STOPPED, ERROR }
 enum class VerdictTone { ACCEPTED, REJECTED, NEUTRAL }
 
 data class BlockSelection(
     val technique: KickTechnique = KickTechnique.SIDE_KICK,
     val side: KickSide = KickSide.RIGHT,
-    val targetContext: String = "bag",
+    val targetContext: KickTarget = KickTarget.STANDING_BAG,
+    val targetHeight: TargetHeight? = null,
     val intent: String = "challenge_counting",
     val cameraProfile: String = "fixed_full_body_oblique_v1",
 )
@@ -59,6 +66,7 @@ data class AppState(
     val sessionId: String? = null,
     val blockId: String? = null,
     val blockReady: Boolean = false,
+    val practiceActive: Boolean = false,
     val captureId: String? = null,
     val captureStartedAtElapsedMs: Long? = null,
     val lastManualKickEventId: String? = null,
@@ -68,4 +76,5 @@ data class AppState(
     val statusDetail: String = "Configure private API and real canonical publisher before official capture.",
     val debugSpeakVerdicts: Boolean = false,
     val activeCue: AthleteCue? = null,
+    val challengeOfficialAcceptedCount: Long? = null,
 )

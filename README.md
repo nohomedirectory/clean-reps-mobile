@@ -21,28 +21,33 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 `tools/bootstrap-android-sdk.sh` downloads the exact Android command-line tools revision, verifies its SHA-256, accepts licenses and installs only platform-tools, API 35 and build-tools 35.0.0. `tools/build-debug-apk.sh` runs unit tests, lint and `assembleDebug`, then writes `app/build/outputs/apk/debug/app-debug.apk.sha256`. The expected APK path is `app/build/outputs/apk/debug/app-debug.apk`.
 
-## Launch config
+## Connection setup and private builds
 
-Do not commit these values. Provide them as process environment variables to `tools/build-debug-apk.sh` (or as matching untracked Gradle properties):
+A generic APK contains no server credentials. Open **Set up connection** and supply the existing private Clean Reps address, video host/port, SRT passphrase and publish password. Passwords are masked; values are saved in app-private preferences with Android backup disabled. Settings can be changed only while video and practice are stopped. Keep Tailscale connected.
 
-- `CHALLENGE_API_BASE_URL`: private/Tailscale Clean Reps API URL, no trailing slash.
+HTTPS API addresses are accepted. HTTP is accepted only for RFC1918 addresses, Tailscale's 100.64.0.0/10 range, or a `.ts.net` hostname. Redirects are not followed. The manifest permits cleartext for this validated private API transport; the video contribution still uses authenticated SRT.
+
+Private operator builds may still inject these four environment variables:
+
+- `CHALLENGE_API_BASE_URL`: private/Tailscale Clean Reps API origin.
 - `MEDIAMTX_SRT_HOST`: AX41 tailnet hostname/IP, optionally followed by `:8890`.
-- `MEDIAMTX_SRT_PASSPHRASE` and `MEDIAMTX_PUBLISH_PASSWORD`: existing Cloud OBS SRT transport and publisher credentials.
-- path is contractually `million-kicks-camera`.
+- `MEDIAMTX_SRT_PASSPHRASE` and `MEDIAMTX_PUBLISH_PASSWORD`: existing transport and publisher credentials.
 
-The app intentionally blocks source readiness without all required configuration. Session/block controls make contract calls with an idempotency key. Do not put those values in the repository or in an APK intended for distribution beyond the private gym device.
+The stream path remains `million-kicks-camera`. An APK containing private settings must never be published as a public GitHub release asset. `CHALLENGE_BUILD_REQUIRE_CONFIG=1` on the build script requests a fail-closed configured build and an adjacent manifest reports configuration status without values. Ordinary generic builds can be provisioned on the device later.
 
 ## Gym operator path
 
-1. Open the app, grant Camera and Microphone.
-2. On tripod, choose the actual drill: **Teep**, **Roundhouse**, or **Side kick**, then **Right** or **Left**. Check the camera preview; a view of the body and target helps later review.
-3. Choose **Create / switch block**, then choose **Confirm framing ready** after checking the camera. Drill selection is locked while the block request is being saved, so the displayed drill and submitted metadata stay aligned.
-4. Start capture and wait for `SOURCE LIVE`; do not count while blocked or reconnecting.
-5. For each low-volume alignment rep, choose **Log manual attempt** after returning to stable stance. The event remains evidence-failed until reviewed in Clean Reps; the button never grants credit.
-6. Connect an earbud, run **Audio test**, then enable Debug verdict speech only for alignment testing.
-7. To change technique or side, select the new drill, create its block, confirm framing again, then continue. Changing selection clears the previous local block readiness without changing the capture or source epoch. A reconnect creates a new `sourceEpoch`; it never creates a second concurrent source.
+1. Install the APK, open it, grant Camera and Microphone, and set up the private connection if the build was not configured.
+2. Choose **Start video**. This creates a private rehearsal session and capture independently of practice. Only a successful SRT handshake displays video live. It does not confirm any public platform or analyzer is connected.
+3. Check the preview. Select Teep, Roundhouse or Side kick, Right or Left, Air/Standing bag/Hanging bag, and optionally Low/Middle/High target height.
+4. Choose **Start practice**. The server stores and activates that block; the app never judges or increments a count.
+5. Choose **Pause practice** before resting or changing the drill. The camera and broadcast contribution continue. Choose **Resume practice**, or change the selection and **Start practice** for a new block.
+6. Choose **Stop video** to stop the contribution and finalize its local safety recording. Restarting or reconnecting attaches a new source epoch. Check framing and resume practice after a reconnect.
+7. Keep the app open on the Moto while contributing video; leaving the foreground stops capture. Use a separate device for chat and broadcast controls. The screen stays awake while this Activity is open.
 
-These controls describe the drill being recorded. They do not select an automatic teep or roundhouse judge, add a cadence requirement, or certify kick quality. The live decoder-to-analysis bridge described above is still missing. Target context remains the existing `bag` value; this patch does not add target height or an air-drill selector.
+This build intentionally marks every capture as `rehearsal`; it contributes zero official credit. Official-live enrollment and trusted platform-delivery attestation require the verified server workflow. Drill metadata and target height do not establish automatic judging readiness or add cadence, reset, hold or visibility requirements.
+
+**Save manual review marker** is a diagnostic fallback during practice. It references the recorded source interval with no invented pose evidence. It does not accept a kick. The challenge total shown is supplied by the server's `challengeOfficialAcceptedCount`, never a locally incremented number.
 
 ## Contract
 
@@ -50,7 +55,8 @@ The canonical schema and semantics live in `clean-reps/docs/tonight-sprint/milli
 
 - `POST /v1/challenge-sessions`
 - `POST /v1/challenge-sessions/{sessionId}/blocks`
-- `POST /v1/challenge-sessions/{sessionId}/captures`
+- `POST /v1/challenge-sessions/{sessionId}/blocks/{blockId}/pause` and `/resume`
+- `POST /v1/challenge-sessions/{sessionId}/captures` with `purpose: rehearsal`
 - `POST /v1/captures/{captureId}/health`
 - `GET /v1/challenge-sessions/{sessionId}/stream`
 
