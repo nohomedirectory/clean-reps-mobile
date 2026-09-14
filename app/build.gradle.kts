@@ -30,6 +30,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    kotlinOptions {
+        // Keep Kotlin and Java bytecode targets aligned. Leaving Kotlin's
+        // target implicit can fail Gradle's JVM target validation.
+        jvmTarget = JavaVersion.VERSION_17.toString()
+    }
 }
 
 fun quoted(value: String) = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
