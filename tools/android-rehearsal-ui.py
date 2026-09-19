@@ -9,10 +9,12 @@ or infer server/media/analyzer success from the app's LIVE indicator.
 import argparse
 import html
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -23,6 +25,32 @@ import xml.etree.ElementTree as ET
 PACKAGE = "com.vaylith.cleanrepsmobile"
 ACTIVITY = PACKAGE + "/.MainActivity"
 BOUNDS = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+PERMISSION_PACKAGES = frozenset({
+    "com.android.packageinstaller", "com.google.android.packageinstaller",
+    "com.android.permissioncontroller", "com.google.android.permissioncontroller",
+})
+PERMISSION_ALLOW_IDS = frozenset(
+    package + ":id/" + button
+    for package in PERMISSION_PACKAGES
+    for button in (
+        "permission_allow_button",  # Android 9/API 28 and earlier.
+        "permission_allow_foreground_only_button",
+        "permission_allow_one_time_button",
+    )
+)
+
+
+def requested_permission_allow_button(tree):
+    """Select only an enabled Android permission-controller allow button.
+
+    Some Google system images use a Google package with Android resource IDs,
+    so both fields must be known permission namespaces without requiring them
+    to be identical. App-owned or merely suffix-matching controls are refused.
+    """
+    return next((node for node in tree.iter("node")
+                 if node.get("package") in PERMISSION_PACKAGES
+                 and node.get("resource-id") in PERMISSION_ALLOW_IDS
+                 and node.get("enabled") == "true"), None)
 
 
 class DriverError(RuntimeError):
@@ -299,9 +327,7 @@ class Driver:
     def permission_dialogs(self):
         for _ in range(3):
             tree = self.dump("permission-check")
-            allow = next((n for n in tree.iter("node") if n.get("resource-id", "").endswith(
-                ("permission_allow_foreground_only_button", "permission_allow_one_time_button"))
-                and n.get("enabled") == "true"), None)
+            allow = requested_permission_allow_button(tree)
             if allow is None:
                 return
             self.tap(allow, "Allow requested camera/microphone while using the app")
@@ -369,6 +395,7 @@ class Driver:
     def finish(self, success, error=None):
         result = {
             "format": "clean-reps-android-ui-rehearsal-v1", "phase": self.args.phase,
+            "uiBackend": self.args.backend,
             "success": success, "testOnly": True, "apkModified": False,
             "usedActualUi": True, "createdApiRecordsDirectly": False,
             "mutatedAppPreferencesDirectly": False,
@@ -386,6 +413,113 @@ class Driver:
         # no app data, recordings, or UI artifacts are deleted by this driver.
 
 
+class UiAutomator2Driver(Driver):
+    """Persistent UiAutomator RPC; unchanged APK and the same UI state checks.
+
+    Audited against openatx/uiautomator2 3.7.0 and adbutils 2.12.0. Its HTTP
+    connection uses the explicit AdbDevice transport, with no host HTTP listener
+    or adb forward. The helper JAR is separate from the application under test.
+    """
+
+    def __init__(self, args, values):
+        super().__init__(args, values)
+        self._u2 = None
+
+    def u2(self):
+        if self._u2 is None:
+            sys.path.insert(0, str(Path(self.args.python_lib).absolute()))
+            # Library exceptions can include RPC arguments. Suppress dependency
+            # diagnostics and report only exception types through our wrapper.
+            logging.getLogger("uiautomator2").setLevel(logging.CRITICAL)
+            logging.getLogger("adbutils").setLevel(logging.CRITICAL)
+            try:
+                import importlib.metadata
+                import adbutils
+                import uiautomator2
+                if (importlib.metadata.version("uiautomator2") != "3.7.0"
+                        or importlib.metadata.version("adbutils") != "2.12.0"):
+                    raise DriverError("Persistent UI backend versions differ from the audited pins")
+                driver = self
+
+                class SoftwareEmulatorDevice(uiautomator2.Device):
+                    def _wait_ready(self, launch_timeout=30):
+                        return super()._wait_ready(launch_timeout=driver.remaining(240))
+
+                    def jsonrpc_call(self, method, params=None, timeout=10):
+                        return super().jsonrpc_call(method, params, timeout=driver.remaining(60))
+
+                client = adbutils.AdbClient(host="127.0.0.1", port=self.args.adb_port, socket_timeout=60)
+                device = client.device(serial=self.args.serial)
+                # Construction starts only the separate UiAutomator helper.
+                # This function is invoked only when the operator runs a phase.
+                self._u2 = SoftwareEmulatorDevice(device, port=9008)
+                self._u2.debug = False
+                self._u2.settings["wait_timeout"] = 10
+                self.event("persistent_ui_connected", adbHost="127.0.0.1", adbPort=self.args.adb_port,
+                           serial=self.args.serial, deviceRpcPort=9008, hostHttpListener=False,
+                           uiautomator2Version="3.7.0", adbutilsVersion="2.12.0")
+            except DriverError:
+                raise
+            except Exception as exc:
+                raise DriverError("Persistent UI helper startup failed: " + type(exc).__name__) from None
+        return self._u2
+
+    def rpc_operation(self, label, action):
+        self.remaining()
+        try:
+            return action(self.u2())
+        except DriverError:
+            raise
+        except Exception as exc:
+            raise DriverError(label + " failed: " + type(exc).__name__) from None
+
+    def shell(self, argv, label, limit=45):
+        # Replace only the expensive fresh-JVM input invocations. Native ADB
+        # read-only dumpsys/screencap and initial Activity launch remain intact.
+        if argv[:2] == ["input", "tap"]:
+            self.rpc_operation(label, lambda d: d.jsonrpc.click(int(argv[2]), int(argv[3])))
+            return ""
+        if argv[:2] == ["input", "swipe"]:
+            self.rpc_operation(label, lambda d: d.jsonrpc.swipe(
+                *[int(v) for v in argv[2:6]], max(2, int(argv[6]) // 5)))
+            return ""
+        if argv == ["input", "keyevent", "KEYCODE_BACK"]:
+            self.rpc_operation(label, lambda d: d.press("back"))
+            return ""
+        return super().shell(argv, label, limit)
+
+    def dump(self, label):
+        xml = self.rpc_operation("Persistent UI hierarchy dump",
+                                 lambda d: d.dump_hierarchy(compressed=False, max_depth=50))
+        try:
+            tree = ET.fromstring(xml)
+        except ET.ParseError:
+            raise DriverError("Persistent UI hierarchy was not valid XML") from None
+        if tree.find("node") is None:
+            raise DriverError("Persistent UI hierarchy was empty")
+        self.dump_number += 1
+        safe_label = re.sub(r"[^a-z0-9-]", "-", label.lower())[:50]
+        (self.output / f"{self.dump_number:03d}-{safe_label}.xml").write_text(self.redact(xml))
+        self.last_tree, self.last_xml = tree, xml
+        return tree
+
+    def enter(self, label, value):
+        self.tap(self.field(label), label)
+
+        def set_focused_text(device):
+            target = device(packageName=PACKAGE, className="android.widget.EditText", focused=True)
+            if target.count != 1:
+                raise DriverError("Connection input does not have one focused app EditText")
+            # UiObject.set_text is Android UI accessibility text input. It does
+            # not use clipboard, custom IME, preferences, or direct server APIs.
+            target.set_text(value, timeout=self.remaining(10))
+
+        self.rpc_operation("Enter " + label, set_focused_text)
+        self.hide_keyboard()
+        self.event("field_entered", field=label, secret=label in ("Video passphrase", "Publish password"),
+                   inputMethod="UiAutomator EditText.set_text")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--adb", required=True)
@@ -394,6 +528,8 @@ def main():
     parser.add_argument("--output", required=True, help="A new directory; parent must already exist")
     parser.add_argument("--adb-port", type=int, default=5038)
     parser.add_argument("--android-user-home")
+    parser.add_argument("--backend", choices=("adb", "uiautomator2"), default="adb")
+    parser.add_argument("--python-lib", help="Isolated dependency directory for the pinned uiautomator2 backend")
     parser.add_argument("--phase", choices=("configure", "practice", "stop"), default="configure")
     parser.add_argument("--timeout-seconds", type=int, default=900)
     args = parser.parse_args()
@@ -401,14 +537,26 @@ def main():
             or not re.fullmatch(r"emulator-\d{4,5}", args.serial)
             or not 1024 <= args.adb_port <= 65535 or not 60 <= args.timeout_seconds <= 1200):
         parser.error("Use an absolute existing adb, an emulator serial, an unprivileged port, and a 60–1200 second timeout")
+    if args.backend == "uiautomator2" and (not args.python_lib or not Path(args.python_lib).is_absolute()
+                                          or not Path(args.python_lib).is_dir()):
+        parser.error("The persistent UI backend requires an absolute existing --python-lib directory")
     driver = None
     try:
         values = connection_values(args.connection)
-        driver = Driver(args, values)
+        driver = (UiAutomator2Driver if args.backend == "uiautomator2" else Driver)(args, values)
+        # Also bound Python dependency startup/retries, beyond ADB subprocess
+        # and individual RPC deadlines. This standalone Linux driver is run in
+        # its own process, so no caller timers or threads are repurposed.
+        def hard_deadline(signum, frame):
+            raise DriverError("UI phase hard deadline exceeded")
+        signal.signal(signal.SIGALRM, hard_deadline)
+        signal.setitimer(signal.ITIMER_REAL, args.timeout_seconds)
         driver.run()
+        signal.setitimer(signal.ITIMER_REAL, 0)
         driver.finish(True)
         return 0
     except (DriverError, OSError, ValueError, KeyError) as exc:
+        signal.setitimer(signal.ITIMER_REAL, 0)
         if driver is not None:
             driver.event("phase_failed", error=driver.redact(str(exc)))
             # Connection dialog screenshots are intentionally never retained.
