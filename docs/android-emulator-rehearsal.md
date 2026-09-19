@@ -14,14 +14,42 @@ The founder's phone and laptop are not test dependencies.
 - Initial runtime: Android Emulator 37.1.11, API 35, x86_64, software
   acceleration. AX41 did not expose `/dev/kvm` at setup.
 - The API 35 software runtime repeatedly lost core Android services after boot.
-  API 28 x86_64 is the lighter fallback under evaluation; it is above this APK's
-  minimum API 26. Neither a boot flag nor successful APK installation establishes
-  a working foreground app, camera, or stream.
+  API 28 x86_64 was also exercised, as recorded below. Neither a boot flag nor
+  successful APK installation establishes a working camera or stream.
 
 Use a new isolated receiver database, new test-only camera credentials and
 loopback listeners. Do not read production credentials or stores, publish to
 streaming platforms, or create official credits. The receiver must begin empty;
 only the actual APK creates its session, capture and practice block.
+
+## Observed result — 2026-09-19
+
+**The actual APK flow has not passed.** The unchanged released APK was installed,
+launched, and operated through its real connection dialog. Android runtime
+failures prevented **Save connection** and **Start video**. This is a demonstrated
+emulator/runtime block, not a proven APK defect. The earlier successful FFmpeg
+publisher rehearsal tested the server protocol/media path; it was not an APK test.
+
+| Run or check | Observed evidence |
+|---|---|
+| API 28 revision 4, x86_64, SwiftShader | Nonstreaming installation with permission grants succeeded. The APK was foreground as PID 2871; UiAutomator opened **Private connection** and entered the API address. Android `system_server` then died: `FinalizerWatchdogDaemon` reported `SurfaceControl.finalize` / `nativeRelease` exceeding 10 seconds. |
+| API 28, `-gpu lavapipe` | The emulator selected Vulkan lavapipe and GLES swangle (ANGLE with SwiftShader 5.0). The same installed APK launched as PID 2491 and reached the first connection field. Android framework death again prevented progress; the UI phase ended with `RPCUnknownError` after about 304 seconds. |
+| API 26 default ARM64 revision 2 | The image and AVD were prepared, but the normal Emulator 37.1.11 launcher rejected the architecture: `QEMU2 emulator does not support arm64 CPU architecture`. No backend bypass was attempted. |
+| AX41 runner inventory | The normal Codex worker reported `/dev/kvm` absent; emulator `-accel-check` exited 8 with `/dev/kvm is not found`. This was a read-only check; infrastructure and policies were unchanged. |
+| Isolated receivers `server-apk-v2` and `server-apk-v3` | Each closed with zero sessions, recordings, and official credits. All four cleanup checks passed, database integrity was valid, and the consistent backup matched. No APK media or verdict was produced. |
+
+All owned emulators and receivers are stopped. UI tooling commit `58e73516`
+preserves the application files; no replacement APK was built for these tests.
+Continue on an already authorized remote Android runner with working KVM,
+using the same APK and fixture and all actual-UI/server evidence gates below.
+The founder's phone and laptop remain unnecessary for this development test.
+
+Handoff evidence is under
+`/srv/hetzner-bridge/workspace/android-simulation-20260917`, including UI events,
+redacted hierarchies, emulator logs, and each receiver's closed-run evidence.
+Bridge task `tsk_MYv1DStBOX1oQAxk` records the first API 28 configuration attempt;
+`tsk_KIYXNbInWe7NwMS_` records the runner acceleration inventory. Closed receiver
+connection files are historical test configuration, not usable live endpoints.
 
 ## Components
 
@@ -41,6 +69,8 @@ only the actual APK creates its session, capture and practice block.
    `adbutils==2.12.0` from an isolated dependency directory. Its persistent
    helper JAR is separate from the tested APK and reaches the emulator through
    the explicitly selected private ADB server, without a host HTTP listener.
+   It persists within one Python phase and shuts down when that process exits;
+   subsequent phases start their own helper and incur startup time.
    Accessibility `EditText.set_text` enters connection values through the UI;
    it does not change preferences directly. The legacy ADB backend's
    `input keycombination` is unsuitable for the API 28 fallback.
@@ -50,6 +80,11 @@ only the actual APK creates its session, capture and practice block.
    values, invokes no app methods, and does not assert audible output.
 
 ## Agent sequence
+
+Before resuming, verify that the approved remote runner's `emulator -accel-check`
+succeeds and launch with supported hardware acceleration. Do not silently repeat
+the failed software fallback. Acceleration availability is a prerequisite for
+the next attempt, not evidence that the APK flow passes.
 
 1. Boot the emulator, wait for Android startup, and install the hash-verified
    APK. Grant its requested camera/microphone permissions on this test device.
@@ -79,10 +114,12 @@ only the actual APK creates its session, capture and practice block.
 
 ### Persistent UI invocation
 
-Run on AX41 after the emulator and a fresh isolated receiver are ready. Use a
-new output directory for every phase; `server-apk-v2` is an example and must name
-the running receiver. The connection file is private test configuration and
-must not be printed. No commands are required on the founder's phone or laptop.
+Run on the remote runner after the emulator and a fresh isolated receiver are
+ready. Use a new output directory for every phase. The completed `server-apk-v2`
+and `server-apk-v3` runs must not be reused; replace the example's `NEXT`
+placeholders and AX41 workspace path with the new run's actual paths. Its
+connection file is private test configuration and must not be printed. No
+commands are required on the founder's phone or laptop.
 
 ```bash
 simulation_root=/srv/hetzner-bridge/workspace/android-simulation-20260917
@@ -90,8 +127,8 @@ python3 tools/android-rehearsal-ui.py \
   --adb "$simulation_root/sdk/platform-tools/adb" \
   --serial emulator-5580 --adb-port 5038 \
   --android-user-home "$simulation_root/sdk-home" \
-  --connection "$simulation_root/server-apk-v2/connection.json" \
-  --output "$simulation_root/ui-configure-api28-v1" \
+  --connection "$simulation_root/server-apk-NEXT/connection.json" \
+  --output "$simulation_root/ui-configure-NEXT" \
   --phase configure --backend uiautomator2 \
   --python-lib "$simulation_root/python-lib" --timeout-seconds 900
 ```
@@ -115,11 +152,11 @@ exit zero alone does not establish branch hits. A branch hit establishes reachin
 the tone call site, not sound at a physical earbud. Debugger instrumentation and
 software emulation cannot certify uninstrumented phone performance or latency.
 
-The setup checks and empty receiver smoke are verified. The exact released APK
-was installed on API 35, but Android framework instability prevented a verified
-app flow. Actual API 28 launch, UI, camera, publishing, practice and feedback
-results remain pending and must be recorded separately. These tools and their
-offline selector tests are not themselves a passing APK test.
+Setup checks, empty receiver smoke tests, actual API 28 app launch, and partial
+connection-form interaction are verified. Saved connection, APK publishing,
+recording, practice analysis, database verdicts, and Android feedback remain
+unverified. These tools and their offline selector tests are not themselves a
+passing APK test.
 
 Primary references: [emulator camera options](https://developer.android.com/studio/run/emulator-commandline),
 [camera scene clock](https://android.googlesource.com/platform/external/qemu/+/refs/heads/emu-main-dev/android/android-emu/android/ver/src/Scene.cpp),
