@@ -8,7 +8,16 @@ The app uses [RootEncoder 2.7.0](https://github.com/pedroSG94/RootEncoder)'s And
 
 The app reports `CONNECTING` until the SRT handshake succeeds and only reports `LIVE` from the transport success callback. A transport discontinuity creates a new `SourceEpoch` before retrying the same canonical MediaMTX path. Missing configuration blocks capture rather than falsely claiming a live source.
 
-The deployed baseline does not yet decode the SRT source into live pose observations. For low-volume alignment only, **Log manual attempt** records a bounded interval against the one canonical raw source. It deliberately supplies no invented pose visibility, so Clean Reps creates an immutable `evidence_failed` event that can be credited only through the private manual-review surface after the recording is inspected. This fallback is not suitable for official high-volume counting.
+The current source labels the diagnostic alignment control **Save manual review marker**. It submits a bounded interval against the one canonical raw source without invented pose evidence for server review; it does not judge or accept a kick. This build declares every capture `purpose: rehearsal`, so reviewing or correcting a marker cannot make it eligible for official challenge credit. Automatic judging readiness is a separate server-side verification gate; the APK flow and physical-phone behavior remain unverified as described below.
+
+The [September 19 Android rehearsal record](docs/android-emulator-rehearsal.md)
+documents actual APK installation, launch, and partial connection-form interaction.
+Android runtime failures prevented saving the connection and starting video; the
+APK capture, practice, and feedback flow has not passed. AX41 lacked working KVM
+acceleration, and the software-emulation attempts do not establish an APK defect.
+The next emulator attempt needs an authorized runner with verified hardware
+acceleration. Emulator results cannot certify physical-phone camera behavior,
+network reliability, performance, or earbud audio; those remain separate checks.
 
 ## Build
 
