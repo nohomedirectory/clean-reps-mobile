@@ -7,23 +7,35 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.os.SystemClock
-import android.view.SurfaceView
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.lifecycleScope
@@ -33,8 +45,11 @@ import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
 import com.vaylith.cleanrepsmobile.diagnostics.LogcatSink
 import com.vaylith.cleanrepsmobile.diagnostics.Redaction
 import com.vaylith.cleanrepsmobile.feedback.AthleteFeedback
-import com.vaylith.cleanrepsmobile.media.*
-import com.vaylith.cleanrepsmobile.model.*
+import com.vaylith.cleanrepsmobile.media.MediaMtxSrtConfig
+import com.vaylith.cleanrepsmobile.media.MediaMtxSrtPublisher
+import com.vaylith.cleanrepsmobile.model.ConnectionSettings
+import com.vaylith.cleanrepsmobile.model.DrillSelectionStore
+import com.vaylith.cleanrepsmobile.model.SharedPreferencesDrillSelectionStore
 import com.vaylith.cleanrepsmobile.session.AppScope
 import com.vaylith.cleanrepsmobile.session.AppState
 import com.vaylith.cleanrepsmobile.session.ClientBuild
@@ -42,8 +57,16 @@ import com.vaylith.cleanrepsmobile.session.PendingLostStore
 import com.vaylith.cleanrepsmobile.session.SessionController
 import com.vaylith.cleanrepsmobile.session.SharedPreferencesPendingLostStore
 import com.vaylith.cleanrepsmobile.session.lostServerKey
+import com.vaylith.cleanrepsmobile.ui.CameraScreen
+import com.vaylith.cleanrepsmobile.ui.CleanRepsTheme
 import java.time.Instant
 
+/**
+ * Window flags, permissions, the OD-7 orientation lock and the controller's lifetime. The screen
+ * itself is [CameraScreen]. The window is edge to edge and, through the theme's short-edges cutout
+ * mode (res/values-v28/themes.xml), also covers the display cutout, with the system bars hidden
+ * until a swipe.
+ */
 class MainActivity : ComponentActivity() {
     private lateinit var feedback: AthleteFeedback
     private lateinit var diagnostics: DiagnosticsLog
@@ -51,6 +74,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var pendingLost: PendingLostStore
     private lateinit var drills: DrillSelectionStore
     private var settings by mutableStateOf(ConnectionSettings())
+    private var showSettings by mutableStateOf(false)
     /** One per connection settings; replaced (and the old one closed) when they change. */
     private lateinit var activeController: MutableState<SessionController>
     private val requiredPermissions = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
@@ -60,6 +84,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Opt in to edge to edge explicitly: targetSdk 35 enforces it only on Android 15.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        hideSystemBars()
         feedback = AthleteFeedback(this)
         settingsStore = ConnectionSettingsStore(this)
         settings = settingsStore.load()
@@ -72,7 +99,41 @@ class MainActivity : ComponentActivity() {
             if (event == Lifecycle.Event.ON_STOP) activeController.value.onLeftScreen()
         })
         if (!hasPermissions()) requestPermissions.launch(requiredPermissions)
-        setContent { MaterialTheme { MobileScreen(activeController.value) } }
+        setContent {
+            // Read so a permission answer recomposes the screen with the new hasPermissions().
+            @Suppress("UNUSED_VARIABLE") val permissionRefresh = permissionGeneration
+            val controller = activeController.value
+            CleanRepsTheme {
+                CameraScreen(
+                    controller = controller,
+                    publisher = controller.publisher,
+                    configured = settings.validationError() == null,
+                    permission = hasPermissions(),
+                    onRequestPermission = { requestPermissions.launch(requiredPermissions) },
+                    onOpenConnectionSettings = { showSettings = true },
+                    onAudioTest = feedback::audioTest,
+                )
+                if (showSettings) ConnectionDialog(settings, onDismiss = { showSettings = false }, onSave = { value ->
+                    settingsStore.save(value)
+                    applySettings(value)
+                    showSettings = false
+                })
+            }
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // A dialog or the permission prompt can bring the bars back; hide them again.
+        if (hasFocus) hideSystemBars()
+    }
+
+    /** Immersive: the bars stay hidden and a swipe shows them briefly over the screen. */
+    private fun hideSystemBars() {
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
     }
 
     private fun hasPermissions() = requiredPermissions.all {
@@ -94,6 +155,7 @@ class MainActivity : ComponentActivity() {
         serverKey = lostServerKey(connection.apiBaseUrl),
         drills = drills,
         // OD-7: set synchronously on the main thread, so the lock holds before the publisher reads the rotation.
+        // LOCKED keeps the current orientation, so the filled preview matches the stream while live.
         orientationLock = { locked ->
             requestedOrientation = if (locked) ActivityInfo.SCREEN_ORIENTATION_LOCKED else ActivityInfo.SCREEN_ORIENTATION_SENSOR
         },
@@ -116,88 +178,11 @@ class MainActivity : ComponentActivity() {
         activeController.value = newController(value, AppState(statusDetail = "Connection saved. Start video to check it."))
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
-    @Composable private fun MobileScreen(controller: SessionController) {
-        @Suppress("UNUSED_VARIABLE") val permissionRefresh = permissionGeneration
-        val state by controller.state.collectAsState()
-        var showSettings by remember { mutableStateOf(false) }
-        val requestInFlight = state.requestInFlight
-        val configured = settings.validationError() == null
-        val videoRunning = state.videoRunning
-
-        Scaffold(topBar = { TopAppBar(title = { Text("Clean Reps") }) }) { pad ->
-            Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Private rehearsal", style = MaterialTheme.typography.titleLarge)
-                Text("This session adds no official challenge credit. Automatic judging readiness must be verified separately.")
-                OutlinedButton(onClick = { showSettings = true }, enabled = !videoRunning && !requestInFlight && !state.practiceActive) {
-                    Text(if (configured) "Connection setup" else "Set up connection")
-                }
-                if (!configured) Text("Add the private server settings to connect this phone.")
-                if (hasPermissions()) {
-                    key(controller) { AndroidView(factory = { SurfaceView(it).also(controller.publisher::attachPreview) }, modifier = Modifier.fillMaxWidth().height(280.dp)) }
-                } else {
-                    Button(onClick = { requestPermissions.launch(requiredPermissions) }) { Text("Allow camera and microphone") }
-                }
-                state.banner?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                state.previewBanner?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                if (state.preview is PreviewStatus.CameraError) OutlinedButton(onClick = controller::reopenCamera) { Text("Reopen camera") }
-                if (state.restartOffered) OutlinedButton(enabled = !requestInFlight, onClick = controller::restartVideo) { Text("Restart video") }
-                Text("Video: ${state.readiness.name.lowercase().replace('_', ' ')}")
-                Text(state.statusDetail)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = configured && hasPermissions() && !videoRunning && !requestInFlight, onClick = controller::startVideo) { Text("Start video") }
-                    OutlinedButton(enabled = videoRunning && !requestInFlight, onClick = controller::stopVideo) { Text("Stop video") }
-                }
-                Text("Keep this app open while streaming. Use your laptop for broadcast and chat controls.", style = MaterialTheme.typography.bodySmall)
-                HorizontalDivider()
-                Text("Practice", style = MaterialTheme.typography.titleLarge)
-                if (state.practiceActive) Text("Practice active. Pause to change the drill; video continues.")
-                ChoiceRow(KickTechnique.entries, state.selection.technique, !state.practiceActive && !requestInFlight, { it.label }) { controller.selectDrill(state.selection.copy(technique = it)) }
-                ChoiceRow(KickSide.entries, state.selection.side, !state.practiceActive && !requestInFlight, { it.label }) { controller.selectDrill(state.selection.copy(side = it)) }
-                ChoiceRow(KickTarget.entries, state.selection.targetContext, !state.practiceActive && !requestInFlight, { it.label }) { controller.selectDrill(state.selection.copy(targetContext = it)) }
-                Text("Target height (optional)")
-                ChoiceRow(listOf<TargetHeight?>(null) + TargetHeight.entries, state.selection.targetHeight, !state.practiceActive && !requestInFlight, { it?.label ?: "Any" }) { controller.selectDrill(state.selection.copy(targetHeight = it)) }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = state.readiness == CaptureReadiness.LIVE && state.captureId != null && !state.practiceActive && !requestInFlight, onClick = controller::startPractice) {
-                        // The block exists from LIVE (warm start); Resume means practice already ran on it.
-                        Text(if (state.practiceStarted) "Resume practice" else "Start practice")
-                    }
-                    OutlinedButton(enabled = state.practiceActive && !requestInFlight, onClick = controller::pausePractice) { Text("Pause practice") }
-                }
-                Text("Check the preview before starting or resuming. Tempo, pauses and held phases are your choice.", style = MaterialTheme.typography.bodySmall)
-                state.challengeOfficialAcceptedCount?.let { Text("Challenge total: $it accepted") }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = feedback::audioTest) { Text("Audio test") }
-                    FilterChip(selected = state.debugSpeakVerdicts, onClick = controller::toggleSpeakVerdicts, label = { Text("Speak verdicts") })
-                    FilterChip(selected = state.voiceHints, onClick = controller::toggleVoiceHints, label = { Text("Voice hints") })
-                }
-                state.feedbackBanner?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                state.activeCue?.let { Card { Text(it.text, Modifier.padding(12.dp)) } }
-                if (state.practiceActive) OutlinedButton(onClick = controller::saveManualMarker) { Text("Save manual review marker") }
-                Text("Video live means this phone reached the video server. It does not confirm a public broadcast or automatic judging.", style = MaterialTheme.typography.bodySmall)
-            }
-        }
-        if (showSettings) ConnectionDialog(settings, onDismiss = { showSettings = false }, onSave = { value ->
-            settingsStore.save(value)
-            applySettings(value)
-            showSettings = false
-        })
-        DisposableEffect(controller) {
-            onDispose { controller.publisher.releasePreview() }
-        }
-    }
-
     override fun onDestroy() {
         // The capture already ended at ON_STOP; this frees the camera, GL and encoders.
         activeController.value.close()
         feedback.close()
         super.onDestroy()
-    }
-}
-
-@Composable private fun <T> ChoiceRow(choices: List<T>, selected: T, enabled: Boolean, label: (T) -> String, onSelect: (T) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-        choices.forEach { value -> FilterChip(selected = value == selected, enabled = enabled, onClick = { onSelect(value) }, label = { Text(label(value)) }) }
     }
 }
 

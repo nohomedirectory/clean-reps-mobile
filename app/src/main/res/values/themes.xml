@@ -1,5 +1,13 @@
-<resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.CleanReps" parent="android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:fontFamily">sans</item><item name="android:colorAccent">#ff6d00</item>
+<resources>
+    <!-- Dark and edge to edge, like a camera app: the screen draws behind transparent system bars,
+         which MainActivity hides until a swipe. res/values-v28 adds the display-cutout mode. -->
+    <style name="Base.Theme.CleanReps" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#ff6d00</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
+
+    <style name="Theme.CleanReps" parent="Base.Theme.CleanReps" />
 </resources>

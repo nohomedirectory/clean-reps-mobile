@@ -1,0 +1,8 @@
+<resources>
+    <!-- API 28+: lay the window out into the display cutout on the short edges, so a landscape
+         window on a punch-hole phone reaches the camera-hole edge instead of leaving a black strip.
+         The preview fills behind the hole; the controls keep to the safeDrawing insets. -->
+    <style name="Theme.CleanReps" parent="Base.Theme.CleanReps">
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>
