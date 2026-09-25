@@ -98,7 +98,11 @@ class FeedbackPolicyTest {
         assertEquals(0, run.log.count { it.cue == FeedbackCue.Accept || it.cue == FeedbackCue.Reject || it.cue == FeedbackCue.Ready })
         val lost = run.times(FeedbackCue.Lost)
         assertTrue("LOST cues: $lost", lost.size <= 3)
-        assertEquals(listOf(5_000L, 20_390L, 36_241L), lost)
+        assertTrue("LOST inside the walk-back grace: $lost", lost.all { it >= FeedbackPolicy.WALK_BACK_GRACE_MS })
+        lost.zipWithNext().forEach { (a, b) -> assertTrue("LOST $a then $b", b - a >= FeedbackPolicy.CUE_INTERVAL_MS) }
+        // The first verdict after the grace (5,000 + 7,530), then the first verdicts at least
+        // 15 s later (5,000 + 23,318 and 5,000 + 41,568).
+        assertEquals(listOf(12_530L, 28_318L, 46_568L), lost)
         assertEquals(26, run.log.count { it.cue == FeedbackCue.Banner(FeedbackPolicy.UNJUDGED_BANNER) })
         assertEquals(0, run.log.count { it.cue is FeedbackCue.Speak })
     }
@@ -239,6 +243,34 @@ class FeedbackPolicyTest {
         val fromVerdicts = run.log.filter { it.input == "verdict" }
         assertEquals(40, fromVerdicts.size)
         assertTrue(fromVerdicts.all { it.cue == FeedbackCue.Banner("Couldn't judge that one - keep head and feet in view") })
+    }
+
+    @Test fun `fallback LOST waits for the walk-back grace after Start and Resume`() {
+        // No liveAnalysis status. An unjudgeable fragment while the athlete walks back is expected.
+        val started = Run()
+        started.start(0)
+        started.verdict(2_000, VerdictClass.UNJUDGEABLE, "evidence_failed")
+        started.ticks(2_000, 9_750)
+        started.verdict(9_999, VerdictClass.UNJUDGEABLE, "evidence_failed")
+        assertEquals(emptyList<Long>(), started.times(FeedbackCue.Lost))
+        started.verdict(10_000, VerdictClass.UNJUDGEABLE, "evidence_failed")
+        assertEquals(listOf(10_000L), started.times(FeedbackCue.Lost))
+
+        val resumed = Run()
+        resumed.start(0)
+        resumed.pause(20_000)
+        resumed.resume(30_000)
+        resumed.verdict(32_000, VerdictClass.UNJUDGEABLE, "evidence_failed")
+        resumed.verdict(40_000, VerdictClass.UNJUDGEABLE, "evidence_failed")
+        assertEquals(listOf(40_000L), resumed.times(FeedbackCue.Lost))
+
+        // Once tracking has been seen since the arm, the grace no longer holds back the fallback.
+        val reached = Run()
+        reached.status(-500, LiveAnalysisState.TRACKING)
+        reached.start(0)
+        reached.status(3_000, LiveAnalysisState.STALE, stale = true)
+        reached.verdict(4_000, VerdictClass.UNJUDGEABLE, "evidence_failed")
+        assertEquals(listOf(4_000L), reached.times(FeedbackCue.Lost))
     }
 
     @Test fun `PENDING never triggers the fallback LOST`() {

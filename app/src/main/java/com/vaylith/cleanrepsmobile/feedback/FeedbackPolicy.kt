@@ -37,7 +37,7 @@ sealed interface FeedbackCue {
  * [CUE_INTERVAL_MS]. A re-entry READY held back by that limit sounds once the
  * limit allows, if tracking has continued. LOST repeats at that interval while
  * its condition holds. A stale or missing status suspends the time-based LOST;
- * unjudgeable verdicts drive it instead.
+ * unjudgeable verdicts drive it instead, after the same walk-back grace.
  */
 class FeedbackPolicy(
     /** OD-4: speak the phone text of the current state together with LOST. */
@@ -93,8 +93,9 @@ class FeedbackPolicy(
                 cues += FeedbackCue.Banner(UNJUDGED_BANNER)
                 // Fallback: without a usable status an unjudgeable verdict is the only
                 // sign the athlete is not being seen. The live analyzer suppresses
-                // fragments, so such a verdict is meaningful.
-                if (practiceActive && !statusAvailable() && allowed(lastLostAtMs, now)) {
+                // fragments, so such a verdict is meaningful. The walk-back grace still
+                // applies: a fragment while the athlete walks back from the phone is expected.
+                if (practiceActive && !statusAvailable() && pastWalkBackGrace(now) && allowed(lastLostAtMs, now)) {
                     lastLostAtMs = now
                     cues += FeedbackCue.Lost
                 }
@@ -147,10 +148,12 @@ class FeedbackPolicy(
     }
 
     private fun lostDue(now: Long): Boolean {
-        if (!trackingReached) return now - armedAtMs >= WALK_BACK_GRACE_MS
+        if (!trackingReached) return pastWalkBackGrace(now)
         val ended = trackingEndedAtMs ?: return false
         return now - ended >= LOST_AFTER_MS
     }
+
+    private fun pastWalkBackGrace(now: Long) = trackingReached || now - armedAtMs >= WALK_BACK_GRACE_MS
 
     private fun statusAvailable() = status?.available == true
 
