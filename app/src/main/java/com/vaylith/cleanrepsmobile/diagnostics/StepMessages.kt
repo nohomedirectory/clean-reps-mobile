@@ -89,6 +89,7 @@ object StepMessages {
         DiagnosticStep.PAUSE -> Target.API to "pause practice"
         DiagnosticStep.RESUME -> Target.API to "resume practice"
         DiagnosticStep.HEALTH -> Target.API to "video health report"
+        DiagnosticStep.SERVER_HEALTH -> Target.API to "server check"
         DiagnosticStep.EVENT_STREAM -> Target.API to "live updates"
         DiagnosticStep.QUALITY_REPORT -> Target.API to "session check"
     }

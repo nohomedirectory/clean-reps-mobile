@@ -45,55 +45,79 @@ class StatusOverlayModelTest {
             """"athleteRegion":{"left":0.2,"top":0.05,"right":0.8,"bottom":0.95},"stale":$stale}}"""
     }
 
-    private fun chip(json: String): AnalysisChip? {
+    /**
+     * The chip's short label for each contract row (orchestrator decision on M8a): the chip names the
+     * state, the rail's hint under the primary button carries the full contract sentence.
+     */
+    private val shortLabels = mapOf(
+        "starting" to "Starting", "acquiring" to "Finding you", "tracking" to "Tracking", "no_person" to "No one in view",
+        "sideways" to "Video sideways", "head_cut" to "Head cut off", "feet_cut" to "Feet cut off", "too_small" to "Too far",
+        "multiple_people" to "Too many people", "unsupported_practice_technique" to "Teep only",
+        "waiting_for_new_capture_epoch" to "Stopped - restart video", "worker_retry_limit" to "Stopped - restart video",
+        "source_geometry_unsupported" to "Unsupported video", "ambiguous_active_sessions" to "Stopped - restart video",
+    )
+
+    /** The screen state for one SSE frame, parsed by the real ChallengeEventParser. */
+    private fun live(json: String): AppState? {
         val status = ChallengeEventParser.parseLiveAnalysis(json) ?: return null
-        return StatusOverlayModel.from(AppState(readiness = CaptureReadiness.LIVE, liveAnalysis = status), health = null).analysis
+        return AppState(readiness = CaptureReadiness.LIVE, liveAnalysis = status, captureId = "capture-1")
     }
 
-    @Test fun `every C3 state and reasonCode shows exactly the contract text`() {
+    private fun chip(json: String): AnalysisChip? = live(json)?.let { StatusOverlayModel.from(it, health = null).analysis }
+
+    private fun railHint(json: String): String? = live(json)?.let { ControlRailModel.from(it, configured = true, permission = true).hint }
+
+    @Test fun `every C3 state and reasonCode - the rail shows the contract text, the chip its short label`() {
         for ((state, reason, text) in contract) {
-            val chip = chip(frame(state, reason))!!
-            assertEquals("$state/$reason", text, chip.text)
+            val json = frame(state, reason)
+            assertEquals("$state/$reason", text, railHint(json))
+            val chip = chip(json)!!
+            assertEquals("$state/$reason", shortLabels.getValue(reason ?: state), chip.text)
             assertFalse("$state/$reason", chip.paused)
         }
         // Every known state and blocked reason is covered by the contract table.
         val covered = contract.map { it.first }.toSet()
         LiveAnalysisState.entries.mapNotNull { it.wireName }.filter { it != "stale" }.forEach { assertTrue(it, it in covered) }
         LiveBlockedReason.entries.mapNotNull { it.wireName }.forEach { reason -> assertTrue(reason, contract.any { it.second == reason }) }
+        assertEquals("Analysis", StatusOverlayModel.ANALYSIS)
     }
 
     @Test fun `practicePaused adds the Paused badge beside the state`() {
         val chip = chip(frame("tracking", paused = true))!!
-        assertEquals(AnalysisChip("Tracking you", paused = true, tone = ChipTone.GOOD), chip)
+        assertEquals(AnalysisChip("Tracking", paused = true, tone = ChipTone.GOOD), chip)
         assertEquals("Paused", StatusOverlayModel.PAUSED)
     }
 
-    @Test fun `a stale status reads Analysis status unavailable and keeps the badge`() {
+    @Test fun `a stale status reads unavailable and keeps the badge`() {
         // The server projects stale as state stale, stale true, reasonCode null, detail "".
-        assertEquals(AnalysisChip("Analysis status unavailable", paused = true, tone = ChipTone.UNAVAILABLE), chip(frame("stale", paused = true, stale = true)))
+        assertEquals(AnalysisChip("Unavailable", paused = true, tone = ChipTone.UNAVAILABLE), chip(frame("stale", paused = true, stale = true)))
+        assertEquals("Analysis status unavailable", railHint(frame("stale", paused = true, stale = true)))
         // The flag alone is enough, whatever the state says.
-        assertEquals("Analysis status unavailable", chip(frame("tracking", stale = true))!!.text)
+        assertEquals("Unavailable", chip(frame("tracking", stale = true))!!.text)
+        assertEquals("Analysis status unavailable", railHint(frame("tracking", stale = true)))
     }
 
     @Test fun `an unknown state or reason shows a safe fallback, never a crash (planted)`() {
-        assertEquals(AnalysisChip("Analysis status unknown", paused = false, tone = ChipTone.UNAVAILABLE), chip(frame("levitating")))
-        assertEquals("Analysis stopped", chip(frame("blocked", "cosmic_rays"))!!.text)
-        assertEquals("Analysis stopped", chip(frame("blocked", null))!!.text)
-        assertEquals("Analysis status unknown", chip(frame(""))!!.text)
+        assertEquals(AnalysisChip("Unknown", paused = false, tone = ChipTone.UNAVAILABLE), chip(frame("levitating")))
+        assertEquals("Analysis status unknown", railHint(frame("levitating")))
+        assertEquals("Stopped", chip(frame("blocked", "cosmic_rays"))!!.text)
+        assertEquals("Analysis stopped", railHint(frame("blocked", "cosmic_rays")))
+        assertEquals("Stopped", chip(frame("blocked", null))!!.text)
+        assertEquals("Unknown", chip(frame(""))!!.text)
         // A malformed projection is ignored by the parser: no chip, no exception.
         assertNull(chip("""{"liveAnalysis":{"state":42}}"""))
         assertNull(chip("""{"liveAnalysis":"tracking"}"""))
         assertNull(chip("not json"))
     }
 
-    @Test fun `the chip shows only while LIVE, with the same text as the rail's hint`() {
+    @Test fun `the chip shows only while LIVE and never repeats the rail's sentence`() {
         val status = LiveAnalysisStatus(LiveAnalysisState.HEAD_CUT)
         for (readiness in CaptureReadiness.entries) {
             val model = StatusOverlayModel.from(AppState(readiness = readiness, liveAnalysis = status, captureId = "capture-1"), null)
             assertEquals("$readiness", readiness == CaptureReadiness.LIVE, model.analysis != null)
         }
         assertNull(StatusOverlayModel.from(AppState(readiness = CaptureReadiness.LIVE), null).analysis)
-        // One mapping: the chip and M3c's hint under the primary button never disagree.
+        // Every state, reason and staleness: the chip is a short label, and never the hint under the primary button.
         val statuses = LiveAnalysisState.entries.flatMap { state ->
             (listOf<LiveBlockedReason?>(null) + LiveBlockedReason.entries).flatMap { reason ->
                 listOf(false, true).map { stale -> LiveAnalysisStatus(state, reason, stale = stale) }
@@ -101,8 +125,10 @@ class StatusOverlayModelTest {
         }
         for (live in statuses) {
             val state = AppState(readiness = CaptureReadiness.LIVE, liveAnalysis = live, captureId = "capture-1")
-            val hint = ControlRailModel.from(state, configured = true, permission = true).hint
-            assertEquals("$live", hint, StatusOverlayModel.from(state, null).analysis!!.text)
+            val hint = ControlRailModel.from(state, configured = true, permission = true).hint!!
+            val label = StatusOverlayModel.from(state, null).analysis!!.text
+            assertNotEquals("$live", hint, label)
+            assertTrue("$live: <$label>", label.isNotBlank() && label.length <= 24)
         }
     }
 

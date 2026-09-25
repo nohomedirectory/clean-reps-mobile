@@ -24,7 +24,7 @@ class StepMessagesTest {
 
     @Test fun `every step and failure kind yields its own message`() {
         val messages = DiagnosticStep.entries.flatMap { step -> kinds.map { kind -> StepMessages.message(step, kind) } }
-        assertEquals(14, DiagnosticStep.entries.size)
+        assertEquals(15, DiagnosticStep.entries.size)
         assertEquals(DiagnosticStep.entries.size * kinds.size, messages.toSet().size)
         messages.forEach { assertTrue("blank message", it.isNotBlank()) }
     }
@@ -33,11 +33,19 @@ class StepMessagesTest {
         assertEquals(
             listOf(
                 "createSession", "attachCapture", "clientInfo", "publisherStart", "srtConnect", "cameraOpen",
-                "previewStart", "createBlock", "markReacquired", "pause", "resume", "health", "eventStream",
+                "previewStart", "createBlock", "markReacquired", "pause", "resume", "health", "serverHealth", "eventStream",
                 "qualityReport",
             ),
             DiagnosticStep.entries.map { it.wireName },
         )
+    }
+
+    @Test fun `the server check and the capture's video health report are told apart`() {
+        assertEquals("Couldn't reach Clean Reps for server check (timeout) — is Tailscale on?",
+            StepMessages.message(DiagnosticStep.SERVER_HEALTH, FailureKind.Timeout))
+        assertEquals("Couldn't reach Clean Reps for video health report (timeout) — is Tailscale on?",
+            StepMessages.message(DiagnosticStep.HEALTH, FailureKind.Timeout))
+        assertEquals("Server error during server check (503)", StepMessages.message(DiagnosticStep.SERVER_HEALTH, FailureKind.Http(503)))
     }
 
     @Test fun `messages name the failure kind and the HTTP code`() {

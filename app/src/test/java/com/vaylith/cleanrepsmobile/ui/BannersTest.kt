@@ -2,7 +2,13 @@ package com.vaylith.cleanrepsmobile.ui
 
 import com.vaylith.cleanrepsmobile.feedback.FeedbackPolicy
 import com.vaylith.cleanrepsmobile.media.CaptureGeometry
+import com.vaylith.cleanrepsmobile.media.FakeEncoderPort
+import com.vaylith.cleanrepsmobile.media.FakeSurface
+import com.vaylith.cleanrepsmobile.media.PreviewCoordinator
 import com.vaylith.cleanrepsmobile.media.PreviewStatus
+import com.vaylith.cleanrepsmobile.media.PublisherListener
+import com.vaylith.cleanrepsmobile.media.PublisherStatus
+import com.vaylith.cleanrepsmobile.media.StreamGate
 import com.vaylith.cleanrepsmobile.model.CaptureReadiness
 import com.vaylith.cleanrepsmobile.session.AppState
 import com.vaylith.cleanrepsmobile.session.SessionController
@@ -77,9 +83,54 @@ class BannersTest {
         assertNull(Banners.caption(AppState(statusDetail = stepText, stepError = stepText), step))
     }
 
-    @Test fun `a rotation waiting for the video to stop is shown`() {
-        val pending = AppState(readiness = CaptureReadiness.LIVE, preview = PreviewStatus.RotationPending(portrait), previewDetail = "Rotation applies after Stop video.")
-        assertEquals(listOf(Banner(BannerKind.ROTATION_PENDING, "Rotation applies after Stop video.")), Banners.select(pending, null))
+    /**
+     * The status and detail a real PreviewCoordinator reports when the phone is turned to portrait
+     * while a landscape video streams: RotationPending with its own detail text.
+     */
+    private fun realRotationPending(): Pair<PreviewStatus, String> {
+        val port = FakeEncoderPort()
+        val reported = mutableListOf<Pair<PreviewStatus, String>>()
+        val listener = object : PublisherListener {
+            override fun onPublisherStatus(status: PublisherStatus, detail: String) = Unit
+            override fun onSourceDiscontinuity(detail: String) = Unit
+            override fun onSafetyRecording(detail: String) = Unit
+            override fun onPreviewStatus(status: PreviewStatus, detail: String) {
+                reported += status to detail
+            }
+        }
+        var rotation: Int? = 1
+        val coordinator = PreviewCoordinator(port, listener, null, 90, { _, _ -> }) { rotation }
+        coordinator.displayRotationChanged(1)
+        coordinator.surfaceAvailable(FakeSurface(1), 0, 0)
+        coordinator.surfaceChanged(2400, 1080)
+        assertTrue(coordinator.goLive() is StreamGate.Ready)
+        port.startStream()
+        coordinator.streamStarted()
+        rotation = 0
+        coordinator.displayRotationChanged(0)
+        assertEquals(emptyList<String>(), port.violations)
+        return reported.last()
+    }
+
+    @Test fun `a rotation waiting for the video to stop shows the coordinator's own text`() {
+        val (pending, detail) = realRotationPending()
+        assertTrue("$pending", pending is PreviewStatus.RotationPending)
+        val state = AppState(readiness = CaptureReadiness.LIVE, preview = pending, previewDetail = detail)
+        assertEquals(listOf(Banner(BannerKind.ROTATION_PENDING, "Phone turned - video stays landscape. Stop video to switch.")),
+            Banners.select(state, turned = null))
+    }
+
+    @Test fun `a turned phone and a pending rotation together make one banner`() {
+        val (pending, detail) = realRotationPending()
+        val state = AppState(readiness = CaptureReadiness.LIVE, preview = pending, previewDetail = detail)
+        // The quantizer's banner for the same turn: landscape video, phone now held in portrait.
+        val turned = TurnWatch(landscape).hold(0, 0, 1_600)
+        // One builder: the two signals read exactly the same.
+        assertEquals(detail, turned)
+        assertEquals(listOf(Banner(BannerKind.ROTATION, detail)), Banners.select(state, turned))
+        // Planted: even a pending banner with different text is dropped while the turned banner shows.
+        val differing = state.copy(previewDetail = "Rotation applies after Stop video.")
+        assertEquals(listOf(BannerKind.ROTATION), Banners.select(differing, turned).map { it.kind })
     }
 
     @Test fun `all four signals together, most urgent first and never twice`() {

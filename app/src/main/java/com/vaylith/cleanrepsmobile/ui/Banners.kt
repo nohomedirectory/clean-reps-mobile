@@ -84,7 +84,8 @@ object Banners {
         state.banner?.let { add(Banner(BannerKind.LEFT_SCREEN, it)) }
         when (state.preview) {
             is PreviewStatus.CameraError -> add(cameraError(state))
-            is PreviewStatus.RotationPending -> add(Banner(BannerKind.ROTATION_PENDING, state.previewDetail))
+            // One turn, one banner: the physical-rotation banner already says the video keeps its orientation.
+            is PreviewStatus.RotationPending -> if (turned == null) add(Banner(BannerKind.ROTATION_PENDING, state.previewDetail))
             else -> Unit
         }
         (state.stepError ?: state.statusDetail.takeIf { state.readiness in VIDEO_FAILED })?.let { add(Banner(BannerKind.ERROR, it)) }

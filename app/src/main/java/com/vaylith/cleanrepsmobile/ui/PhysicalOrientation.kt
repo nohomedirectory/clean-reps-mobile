@@ -1,5 +1,6 @@
 package com.vaylith.cleanrepsmobile.ui
 
+import com.vaylith.cleanrepsmobile.media.CaptureGeometry
 import com.vaylith.cleanrepsmobile.model.CaptureOrientation
 
 /**
@@ -86,7 +87,8 @@ class PhysicalOrientation(initial: Quadrant? = null) {
         fun turnedBanner(live: Boolean, lockedDisplayRotation: Int, stream: CaptureOrientation, physical: Quadrant?): String? {
             if (!live || physical == null) return null
             if (physical == Quadrant.forDisplayRotation(lockedDisplayRotation)) return null
-            return "Phone turned - video stays ${stream.wireValue}. Stop video to switch."
+            // The same text as the preview's RotationPending detail, so the two never read differently.
+            return CaptureGeometry.turnedText(stream)
         }
     }
 }

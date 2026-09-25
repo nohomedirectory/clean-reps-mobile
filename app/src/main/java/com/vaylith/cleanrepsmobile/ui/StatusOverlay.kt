@@ -30,7 +30,7 @@ import com.vaylith.cleanrepsmobile.api.ServerHealth
 import com.vaylith.cleanrepsmobile.model.CaptureReadiness
 import com.vaylith.cleanrepsmobile.model.LiveAnalysisState
 import com.vaylith.cleanrepsmobile.model.LiveAnalysisStatus
-import com.vaylith.cleanrepsmobile.model.phoneText
+import com.vaylith.cleanrepsmobile.model.LiveBlockedReason
 import com.vaylith.cleanrepsmobile.session.AppState
 import kotlinx.coroutines.delay
 
@@ -51,6 +51,7 @@ data class ReachabilityChip(val text: String, val reachable: Boolean?)
 data class StatusOverlayModel(val analysis: AnalysisChip?, val reachability: ReachabilityChip, val counts: String?) {
     companion object {
         const val PAUSED = "Paused"
+        const val ANALYSIS = "Analysis"
         const val CHECKING = "Server: checking..."
         const val UNREACHABLE = "Server unreachable"
 
@@ -64,13 +65,37 @@ data class StatusOverlayModel(val analysis: AnalysisChip?, val reachability: Rea
         )
 
         /**
-         * The single `phoneText` table (model/LiveAnalysisModels.kt) gives the text. A stale status reads
-         * "Analysis status unavailable"; a state or reason this app does not know reads as its safe
-         * fallback ("Analysis status unknown", "Analysis stopped"). `practicePaused` adds the badge.
+         * The chip shows the short state label; the full C3 instruction (`phoneText`, the contract's
+         * verbatim text) is the rail's hint under the primary button, so the screen never shows the
+         * same sentence twice. A stale status reads [chipLabel] of stale; a state or reason this app
+         * does not know reads as its safe fallback. `practicePaused` adds the badge.
          */
         fun analysis(status: LiveAnalysisStatus): AnalysisChip {
             val state = if (status.available) status.state else LiveAnalysisState.STALE
-            return AnalysisChip(phoneText(state, status.reasonCode), status.practicePaused, tone(state))
+            return AnalysisChip(chipLabel(state, status.reasonCode), status.practicePaused, tone(state))
+        }
+
+        /** The chip's short label for a state, read after "Analysis" (orchestrator decision on M8a). */
+        fun chipLabel(state: LiveAnalysisState, reason: LiveBlockedReason?): String = when (state) {
+            LiveAnalysisState.STARTING -> "Starting"
+            LiveAnalysisState.ACQUIRING -> "Finding you"
+            LiveAnalysisState.TRACKING -> "Tracking"
+            LiveAnalysisState.NO_PERSON -> "No one in view"
+            LiveAnalysisState.SIDEWAYS -> "Video sideways"
+            LiveAnalysisState.HEAD_CUT -> "Head cut off"
+            LiveAnalysisState.FEET_CUT -> "Feet cut off"
+            LiveAnalysisState.TOO_SMALL -> "Too far"
+            LiveAnalysisState.MULTIPLE_PEOPLE -> "Too many people"
+            LiveAnalysisState.BLOCKED -> when (reason) {
+                LiveBlockedReason.UNSUPPORTED_PRACTICE_TECHNIQUE -> "Teep only"
+                LiveBlockedReason.SOURCE_GEOMETRY_UNSUPPORTED -> "Unsupported video"
+                LiveBlockedReason.WAITING_FOR_NEW_CAPTURE_EPOCH,
+                LiveBlockedReason.WORKER_RETRY_LIMIT,
+                LiveBlockedReason.AMBIGUOUS_ACTIVE_SESSIONS -> "Stopped - restart video"
+                LiveBlockedReason.UNKNOWN, null -> "Stopped"
+            }
+            LiveAnalysisState.STALE -> "Unavailable"
+            LiveAnalysisState.UNKNOWN -> "Unknown"
         }
 
         fun reachability(health: ServerHealth?): ReachabilityChip = when {
@@ -135,7 +160,10 @@ fun StatusOverlay(model: StatusOverlayModel, modifier: Modifier = Modifier) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Dot(toneColor(chip.tone))
-                Text(chip.text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color.White)
+                Text(StatusOverlayModel.ANALYSIS, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.8f))
+                // Weighted without fill: the badge is measured first, so a long label wraps instead of squeezing it away.
+                Text(chip.text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = Color.White,
+                    modifier = Modifier.weight(1f, fill = false))
                 if (chip.paused) {
                     Text(StatusOverlayModel.PAUSED, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = Color.Black,
                         modifier = Modifier.background(Color(0xFFFFD54F), RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 2.dp))

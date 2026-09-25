@@ -16,7 +16,11 @@ enum class DiagnosticStep(val wireName: String) {
     MARK_REACQUIRED("markReacquired"),
     PAUSE("pause"),
     RESUME("resume"),
+    /** `POST /v1/captures/:id/health`: the capture's video health report. */
     HEALTH("health"),
+
+    /** `GET /health` (C5): the server check behind the reachability chip. */
+    SERVER_HEALTH("serverHealth"),
     EVENT_STREAM("eventStream"),
     QUALITY_REPORT("qualityReport"),
 }

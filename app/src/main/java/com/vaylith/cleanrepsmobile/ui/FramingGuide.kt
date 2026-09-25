@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -28,12 +27,13 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.vaylith.cleanrepsmobile.media.CaptureGeometry
 import com.vaylith.cleanrepsmobile.model.CaptureOrientation
 import com.vaylith.cleanrepsmobile.model.CaptureReadiness
+import com.vaylith.cleanrepsmobile.model.LiveAnalysisStatus
 import com.vaylith.cleanrepsmobile.model.LiveAthleteRegion
 import com.vaylith.cleanrepsmobile.model.LiveSourceGeometry
 import com.vaylith.cleanrepsmobile.model.LiveSourceOrientation
@@ -84,6 +84,23 @@ object FramingGuide {
 
     /** Shown before practice; faded out while practice is active. */
     fun alpha(practiceActive: Boolean): Float = if (practiceActive) 0f else 1f
+
+    /**
+     * The status whose region is drawn: only while the video is LIVE and the status is current. A
+     * stale status keeps its last region, but a box drawn from it would claim the analyzer is watching.
+     */
+    fun drawnStatus(state: AppState): LiveAnalysisStatus? =
+        state.liveAnalysis?.takeIf { state.readiness == CaptureReadiness.LIVE && it.available }
+
+    /**
+     * Where the "Stay in this area" label goes: [inset] inside the box's top left corner, moved
+     * back inside the window when the box reaches its right or bottom edge. All values in pixels.
+     */
+    fun labelPosition(box: ScreenBox, labelW: Int, labelH: Int, windowW: Int, windowH: Int, inset: Int): Pair<Int, Int> {
+        val x = (box.left.roundToInt() + inset).coerceAtMost(windowW - labelW).coerceAtLeast(0)
+        val y = (box.top.roundToInt() + inset).coerceAtMost(windowH - labelH).coerceAtLeast(0)
+        return x to y
+    }
 }
 
 /** "Landscape works best for kicks", shown while the prepared geometry is portrait until the athlete dismisses it. */
@@ -96,13 +113,13 @@ object PortraitHint {
 }
 
 /**
- * The region box over the preview, in window pixels, while the video is LIVE and the analyzer
- * has reported a region. It fades during practice. [mode] is the screen's preview mode.
+ * The region box over the preview, in window pixels, while the video is LIVE and the analyzer's
+ * status is current. It fades during practice. [mode] is the screen's preview mode.
  */
 @Composable
 fun FramingBox(state: AppState, prepared: CaptureGeometry?, windowW: Int, windowH: Int, mode: PreviewMode) {
     val alpha by animateFloatAsState(FramingGuide.alpha(state.practiceActive), tween(600), label = "framing box")
-    val live = state.liveAnalysis?.takeIf { state.readiness == CaptureReadiness.LIVE } ?: return
+    val live = FramingGuide.drawnStatus(state) ?: return
     val box = FramingGuide.box(live.athleteRegion, live.sourceGeometry, prepared, windowW, windowH, mode) ?: return
     if (alpha == 0f) return
     val color = Color.White.copy(alpha = 0.85f)
@@ -117,7 +134,13 @@ fun FramingBox(state: AppState, prepared: CaptureGeometry?, windowW: Int, window
         }
         Text(
             FramingGuide.LABEL, style = MaterialTheme.typography.labelLarge, color = Color.White,
-            modifier = Modifier.offset { IntOffset(box.left.roundToInt() + 8.dp.roundToPx(), box.top.roundToInt() + 8.dp.roundToPx()) }
+            modifier = Modifier
+                .layout { measurable, constraints ->
+                    // Measured first, then kept inside the window even when the box reaches its edge.
+                    val label = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0))
+                    val (x, y) = FramingGuide.labelPosition(box, label.width, label.height, constraints.maxWidth, constraints.maxHeight, 8.dp.roundToPx())
+                    layout(constraints.maxWidth, constraints.maxHeight) { label.place(x, y) }
+                }
                 .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp)).padding(horizontal = 8.dp, vertical = 2.dp),
         )
     }

@@ -2,9 +2,13 @@ package com.vaylith.cleanrepsmobile.ui
 
 import com.vaylith.cleanrepsmobile.media.CaptureGeometry
 import com.vaylith.cleanrepsmobile.model.CaptureOrientation
+import com.vaylith.cleanrepsmobile.model.CaptureReadiness
+import com.vaylith.cleanrepsmobile.model.LiveAnalysisState
+import com.vaylith.cleanrepsmobile.model.LiveAnalysisStatus
 import com.vaylith.cleanrepsmobile.model.LiveAthleteRegion
 import com.vaylith.cleanrepsmobile.model.LiveSourceGeometry
 import com.vaylith.cleanrepsmobile.model.LiveSourceOrientation
+import com.vaylith.cleanrepsmobile.session.AppState
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -95,6 +99,37 @@ class FramingGuideModelTest {
         // FIT: the 1920x1080 box at the top left, uncropped.
         assertBox(ScreenBox(384.0, 54.0, 1536.0, 1026.0), FramingGuide.box(workerRegion, null, landscape, 2400, 1080, PreviewMode.FIT))
         assertNull(FramingGuide.box(workerRegion, null, landscape, 0, 1080, PreviewMode.FILL))
+    }
+
+    @Test fun `no box is drawn from a stale status or when the video is not LIVE`() {
+        val current = LiveAnalysisStatus(LiveAnalysisState.TRACKING, athleteRegion = workerRegion, sourceGeometry = landscapeSource)
+        assertEquals(current, FramingGuide.drawnStatus(AppState(readiness = CaptureReadiness.LIVE, liveAnalysis = current)))
+        // Stale keeps the last region, but drawing it would claim the analyzer is still watching.
+        val stale = current.copy(state = LiveAnalysisState.STALE, stale = true)
+        assertNull(FramingGuide.drawnStatus(AppState(readiness = CaptureReadiness.LIVE, liveAnalysis = stale)))
+        assertNull(FramingGuide.drawnStatus(AppState(readiness = CaptureReadiness.LIVE, liveAnalysis = current.copy(stale = true))))
+        assertNull(FramingGuide.drawnStatus(AppState(readiness = CaptureReadiness.LIVE, liveAnalysis = current.copy(state = LiveAnalysisState.STALE))))
+        for (readiness in CaptureReadiness.entries - CaptureReadiness.LIVE) {
+            assertNull("$readiness", FramingGuide.drawnStatus(AppState(readiness = readiness, liveAnalysis = current)))
+        }
+        assertNull(FramingGuide.drawnStatus(AppState(readiness = CaptureReadiness.LIVE)))
+    }
+
+    @Test fun `the Stay in this area label stays inside the window`() {
+        val label = 300 to 60
+        // Inside a box away from the edges: 8 px in from its top left corner.
+        assertEquals(488 to 8, FramingGuide.labelPosition(ScreenBox(480.0, 0.0, 1920.0, 1080.0), label.first, label.second, 2400, 1080, 8))
+        // A narrow box at the right edge: moved left so the whole label is on screen.
+        assertEquals(2100 to 108, FramingGuide.labelPosition(ScreenBox(2350.0, 100.0, 2400.0, 500.0), label.first, label.second, 2400, 1080, 8))
+        // A box starting near the bottom: moved up.
+        assertEquals(58 to 1020, FramingGuide.labelPosition(ScreenBox(50.0, 1060.0, 900.0, 1080.0), label.first, label.second, 2400, 1080, 8))
+        // A label wider than the window starts at the left edge rather than off screen.
+        assertEquals(0 to 8, FramingGuide.labelPosition(ScreenBox(0.0, 0.0, 200.0, 200.0), 500, 60, 400, 800, 8))
+        // Planted: over many boxes and label sizes, the label never leaves the window when it fits.
+        for (left in listOf(0.0, 500.0, 1900.0, 2390.0)) for (top in listOf(0.0, 540.0, 1050.0, 1079.0)) for ((w, h) in listOf(300 to 60, 120 to 40, 2400 to 1080)) {
+            val (x, y) = FramingGuide.labelPosition(ScreenBox(left, top, 2400.0, 1080.0), w, h, 2400, 1080, 8)
+            assertTrue("$left,$top ${w}x$h at $x,$y", x >= 0 && y >= 0 && x + w <= 2400 && y + h <= 1080)
+        }
     }
 
     @Test fun `the guide and its hint fade during practice`() {

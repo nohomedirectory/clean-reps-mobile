@@ -127,4 +127,12 @@ class CaptureGeometryTest {
         assertNotEquals(landscape, reverseLandscape)
         assertEquals(geometry(1, 90), landscape)
     }
+
+    @Test fun `the one phone-turned text names the orientation the video keeps`() {
+        assertEquals("Phone turned - video stays landscape. Stop video to switch.", CaptureGeometry.turnedText(LANDSCAPE))
+        assertEquals("Phone turned - video stays portrait. Stop video to switch.", CaptureGeometry.turnedText(PORTRAIT))
+        assertEquals("Phone turned - video stays as it started. Stop video to switch.", CaptureGeometry.turnedText(null))
+        // ASCII only: no em dash, so both rotation signals read the same.
+        assertTrue(CaptureOrientation.entries.all { CaptureGeometry.turnedText(it).all { c -> c.code < 128 } })
+    }
 }

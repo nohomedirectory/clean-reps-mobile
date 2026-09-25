@@ -201,14 +201,25 @@ class CameraScreenContractTest {
         assertTrue("val banners = Banners.select(state, turned)" in screen)
     }
 
-    @Test fun `the C3 phone texts have one table, and the chip reads it`() {
+    @Test fun `the C3 phone texts have one table, read by the rail hint, while the chip shows a short label`() {
         val texts = setOf("Starting analysis...", "Finding you...", "Tracking you", "Step into the frame", "Head not visible - move the phone back or higher",
             "Automatic analysis supports Teep only", "Analysis status unavailable")
         val owners = mainSources.filter { (_, source) -> literals(source).any { it in texts } }.map { it.first }
         assertEquals(listOf("LiveAnalysisModels.kt"), owners)
-        assertTrue("phoneText(" in ui.getValue("StatusOverlay.kt"))
+        // Orchestrator decision: the full instruction is the rail's hint (M3c), the chip names the state.
+        assertTrue("phoneText(" in ui.getValue("PrimaryActionState.kt"))
+        assertFalse("phoneText(" in ui.getValue("StatusOverlay.kt"))
         // Planted: a second table is found; a text quoted in a comment is not.
         assertEquals(listOf("Tracking you"), literals("val chip = \"Tracking you\" // \"Finding you...\"\n/* \"Step into the frame\" */").filter { it in texts })
+    }
+
+    @Test fun `the Paused badge is measured before the chip label, so a long label can never squeeze it away`() {
+        assertTrue(badgeKeepsItsWidth(ui.getValue("StatusOverlay.kt")))
+        // Planted: an unweighted label (the acffdff form) takes the width first.
+        assertFalse(badgeKeepsItsWidth(code("""
+            Text(chip.text, style = MaterialTheme.typography.titleMedium, color = Color.White)
+            if (chip.paused) { Text(StatusOverlayModel.PAUSED, style = MaterialTheme.typography.labelLarge) }
+        """)))
     }
 
     @Test fun `the server is polled only while the screen is visible, for the controller in use`() {
@@ -289,6 +300,16 @@ class CameraScreenContractTest {
         val secrets = calls(text, "OutlinedTextField").filter { args -> args.any { "srtPassphrase" in it || "publishPassword" in it } }
         val both = listOf("srtPassphrase", "publishPassword").all { name -> secrets.any { args -> args.any { name in it } } }
         return both && secrets.all { "visualTransformation = PasswordVisualTransformation()" in it } && "VisualTransformation.None" !in text
+    }
+
+    /**
+     * The chip label is a weighted, non-filling child, so Compose measures the Paused badge (unweighted)
+     * first and gives the label only what is left; the badge follows the label in the row.
+     */
+    private fun badgeKeepsItsWidth(text: String): Boolean {
+        val label = calls(text, "Text").firstOrNull { args -> args.firstOrNull() == "chip.text" } ?: return false
+        val badge = text.indexOf("Text(StatusOverlayModel.PAUSED")
+        return label.any { it.replace(" ", "") == "modifier=Modifier.weight(1f,fill=false)" } && badge > text.indexOf("Text(chip.text")
     }
 
     /** Every main Kotlin file: its name and raw source. */

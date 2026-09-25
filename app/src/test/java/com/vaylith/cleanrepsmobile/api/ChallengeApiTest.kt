@@ -327,11 +327,35 @@ class ChallengeApiTest {
         assertEquals(ServerHealth(reachable = false, release = null), ChallengeApi("", log).health())
 
         assertTrue(requests.all { it.method == "GET" && it.path == "/health" })
-        assertTrue(log.entries().all { it.step == DiagnosticStep.HEALTH })
+        // Its own step: the capture's video health report stays HEALTH.
+        assertTrue(log.entries().all { it.step == DiagnosticStep.SERVER_HEALTH })
+        // Logged on change only: the third answer repeats the second (reachable, no release) and adds no entry.
         assertEquals(
-            listOf(DiagnosticOutcome.OK, DiagnosticOutcome.OK, DiagnosticOutcome.OK, DiagnosticOutcome.FAIL, DiagnosticOutcome.FAIL, DiagnosticOutcome.FAIL),
+            listOf(DiagnosticOutcome.OK, DiagnosticOutcome.OK, DiagnosticOutcome.FAIL, DiagnosticOutcome.FAIL, DiagnosticOutcome.FAIL),
             log.entries().map { it.outcome },
         )
+    }
+
+    @Test fun `a steady health poll never floods the diagnostics log`() = runTest {
+        respond("GET", "/health", json(200, """{"service":"clean-reps","release":"4acbcce"}"""))
+        val api = api()
+        repeat(20) { assertEquals(ServerHealth(reachable = true, release = "4acbcce"), api.health()) }
+        assertEquals(20, requests.size)
+        assertEquals(listOf("server release 4acbcce"), log.entries().map { it.redactedMessage })
+
+        // Each change is logged once: unreachable, back, and a new release.
+        respond("GET", "/health", json(503, """{"error":"starting"}"""))
+        repeat(5) { api.health() }
+        respond("GET", "/health", json(200, """{"service":"clean-reps","release":"4acbcce"}"""))
+        repeat(5) { api.health() }
+        respond("GET", "/health", json(200, """{"service":"clean-reps","release":"5bdcdff"}"""))
+        repeat(5) { api.health() }
+        assertEquals(
+            listOf(DiagnosticOutcome.OK, DiagnosticOutcome.FAIL, DiagnosticOutcome.OK, DiagnosticOutcome.OK),
+            log.entries().map { it.outcome },
+        )
+        assertEquals("server release 5bdcdff", log.entries().last().redactedMessage)
+        assertTrue(log.entries().all { it.step == DiagnosticStep.SERVER_HEALTH })
     }
 
     @Test fun `an unconfigured client fails with its step and never touches the network`() = runTest {

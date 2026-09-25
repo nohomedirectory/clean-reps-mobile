@@ -174,16 +174,31 @@ class ChallengeApi(
         }
     }
 
+    /**
+     * The last `GET /health` answer. The reachability chip polls every 15 s and the DiagnosticsLog keeps 100
+     * entries, so only a change of reachability or release is logged; repeated answers would evict real failures.
+     */
+    @Volatile private var lastHealth: ServerHealth? = null
+
     override suspend fun health(): ServerHealth {
-        val step = DiagnosticStep.HEALTH
-        return try {
+        val step = DiagnosticStep.SERVER_HEALTH
+        var failure: ApiException? = null
+        val health = try {
             val reply = exchange(step, "GET", "/health").requireSuccess(step)
             ServerHealth(reachable = true, release = RELEASE.find(reply.text)?.groupValues?.get(1))
-                .also { diagnostics?.ok(step, "server release ${it.release ?: "not reported"}") }
         } catch (error: ApiException) {
-            diagnostics?.fail(step, error.message.orEmpty(), error.cause)
+            failure = error
             ServerHealth(reachable = false, release = null)
         }
+        if (health != lastHealth) {
+            lastHealth = health
+            if (failure == null) {
+                diagnostics?.ok(step, "server release ${health.release ?: "not reported"}")
+            } else {
+                diagnostics?.fail(step, failure.message.orEmpty(), failure.cause)
+            }
+        }
+        return health
     }
 
     override suspend fun qualityReport(captureId: String): FetchResult<String> =

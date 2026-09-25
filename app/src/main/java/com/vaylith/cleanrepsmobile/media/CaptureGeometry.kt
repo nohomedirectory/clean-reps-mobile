@@ -47,6 +47,13 @@ data class CaptureGeometry private constructor(
         /** `CameraHelper.getCameraOrientation`, indexed by display rotation. */
         private val UPRIGHT_ROTATION = intArrayOf(90, 0, 270, 180)
 
+        /**
+         * The one "phone turned" text, for both the physical-rotation banner and the preview's
+         * RotationPending detail, naming the orientation the running video keeps.
+         */
+        fun turnedText(videoOrientation: CaptureOrientation?): String =
+            "Phone turned - video stays ${videoOrientation?.wireValue ?: "as it started"}. Stop video to switch."
+
         fun forDisplayRotation(displayRotation: Int, sensorOrientation: Int): Result<CaptureGeometry> {
             if (displayRotation !in 0..3) {
                 return Result.failure(IllegalArgumentException("Unsupported display rotation ($displayRotation)"))

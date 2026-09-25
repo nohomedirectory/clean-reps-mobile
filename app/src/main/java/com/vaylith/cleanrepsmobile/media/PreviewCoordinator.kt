@@ -175,8 +175,7 @@ internal class PreviewCoordinator<S>(
         PreviewStatus.Ready -> "Camera preview ready" + preparedGeometry?.let { " (${it.label})" }.orEmpty() + "."
         PreviewStatus.Lost -> "Camera preview paused while the screen is away."
         is PreviewStatus.CameraError -> status.reason
-        is PreviewStatus.RotationPending ->
-            "Phone turned — video stays ${preparedGeometry?.orientation?.wireValue ?: "as it started"}. Stop video to switch."
+        is PreviewStatus.RotationPending -> CaptureGeometry.turnedText(preparedGeometry?.orientation)
     }
 
     /** Runs one input unless the publisher was released; an unexpected exception becomes a camera error. */

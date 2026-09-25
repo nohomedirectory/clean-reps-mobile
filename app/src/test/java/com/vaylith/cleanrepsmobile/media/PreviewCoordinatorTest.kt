@@ -129,7 +129,9 @@ class PreviewCoordinatorTest {
         assertEquals(emptyList<String>(), port.calls)
         val (pending, detail) = listener.previewStatuses.last()
         assertEquals(PreviewStatus.RotationPending(CaptureGeometry.forDisplayRotation(0, 90).getOrThrow()), pending)
-        assertEquals("Phone turned — video stays landscape. Stop video to switch.", detail)
+        // The shared builder's text, the same as the physical-rotation banner's.
+        assertEquals("Phone turned - video stays landscape. Stop video to switch.", detail)
+        assertEquals(CaptureGeometry.turnedText(CaptureOrientation.LANDSCAPE), detail)
         assertEquals("landscape 1280x720", coordinator.preparedGeometry?.label)
 
         port.stopStream()
