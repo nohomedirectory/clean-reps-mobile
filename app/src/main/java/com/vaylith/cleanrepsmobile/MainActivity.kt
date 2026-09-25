@@ -1,9 +1,11 @@
 package com.vaylith.cleanrepsmobile
 
 import android.Manifest
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import android.os.SystemClock
 import android.view.SurfaceView
 import android.view.WindowManager
@@ -39,6 +41,7 @@ import com.vaylith.cleanrepsmobile.session.ClientBuild
 import com.vaylith.cleanrepsmobile.session.PendingLostStore
 import com.vaylith.cleanrepsmobile.session.SessionController
 import com.vaylith.cleanrepsmobile.session.SharedPreferencesPendingLostStore
+import com.vaylith.cleanrepsmobile.session.lostServerKey
 import java.time.Instant
 
 class MainActivity : ComponentActivity() {
@@ -46,6 +49,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var diagnostics: DiagnosticsLog
     private lateinit var settingsStore: ConnectionSettingsStore
     private lateinit var pendingLost: PendingLostStore
+    private lateinit var drills: DrillSelectionStore
     private var settings by mutableStateOf(ConnectionSettings())
     /** One per connection settings; replaced (and the old one closed) when they change. */
     private lateinit var activeController: MutableState<SessionController>
@@ -61,6 +65,7 @@ class MainActivity : ComponentActivity() {
         settings = settingsStore.load()
         diagnostics = DiagnosticsLog(System::currentTimeMillis, LogcatSink, Redaction.forSettings(settings))
         pendingLost = SharedPreferencesPendingLostStore(this)
+        drills = SharedPreferencesDrillSelectionStore(this)
         activeController = mutableStateOf(newController(settings, AppState()))
         // ON_STOP still stops video: there is no background capture.
         lifecycle.addObserver(LifecycleEventObserver { _, event ->
@@ -85,8 +90,16 @@ class MainActivity : ComponentActivity() {
         signals = feedback,
         diagnostics = diagnostics,
         pendingLost = pendingLost,
+        lostDeliveries = AppScope.lostDeliveries,
+        serverKey = lostServerKey(connection.apiBaseUrl),
+        drills = drills,
+        // OD-7: set synchronously on the main thread, so the lock holds before the publisher reads the rotation.
+        orientationLock = { locked ->
+            requestedOrientation = if (locked) ActivityInfo.SCREEN_ORIENTATION_LOCKED else ActivityInfo.SCREEN_ORIENTATION_SENSOR
+        },
         appScope = AppScope.scope,
         uiScope = lifecycleScope,
+        isMainThread = { Looper.myLooper() == Looper.getMainLooper() },
         elapsedRealtime = SystemClock::elapsedRealtime,
         wallClock = Instant::now,
         isScreenVisible = { lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) },
@@ -128,6 +141,7 @@ class MainActivity : ComponentActivity() {
                 state.banner?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 state.previewBanner?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 if (state.preview is PreviewStatus.CameraError) OutlinedButton(onClick = controller::reopenCamera) { Text("Reopen camera") }
+                if (state.restartOffered) OutlinedButton(enabled = !requestInFlight, onClick = controller::restartVideo) { Text("Restart video") }
                 Text("Video: ${state.readiness.name.lowercase().replace('_', ' ')}")
                 Text(state.statusDetail)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -145,7 +159,8 @@ class MainActivity : ComponentActivity() {
                 ChoiceRow(listOf<TargetHeight?>(null) + TargetHeight.entries, state.selection.targetHeight, !state.practiceActive && !requestInFlight, { it?.label ?: "Any" }) { controller.selectDrill(state.selection.copy(targetHeight = it)) }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(enabled = state.readiness == CaptureReadiness.LIVE && state.captureId != null && !state.practiceActive && !requestInFlight, onClick = controller::startPractice) {
-                        Text(if (state.blockId == null) "Start practice" else "Resume practice")
+                        // The block exists from LIVE (warm start); Resume means practice already ran on it.
+                        Text(if (state.practiceStarted) "Resume practice" else "Start practice")
                     }
                     OutlinedButton(enabled = state.practiceActive && !requestInFlight, onClick = controller::pausePractice) { Text("Pause practice") }
                 }
@@ -154,7 +169,9 @@ class MainActivity : ComponentActivity() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = feedback::audioTest) { Text("Audio test") }
                     FilterChip(selected = state.debugSpeakVerdicts, onClick = controller::toggleSpeakVerdicts, label = { Text("Speak verdicts") })
+                    FilterChip(selected = state.voiceHints, onClick = controller::toggleVoiceHints, label = { Text("Voice hints") })
                 }
+                state.feedbackBanner?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 state.activeCue?.let { Card { Text(it.text, Modifier.padding(12.dp)) } }
                 if (state.practiceActive) OutlinedButton(onClick = controller::saveManualMarker) { Text("Save manual review marker") }
                 Text("Video live means this phone reached the video server. It does not confirm a public broadcast or automatic judging.", style = MaterialTheme.typography.bodySmall)

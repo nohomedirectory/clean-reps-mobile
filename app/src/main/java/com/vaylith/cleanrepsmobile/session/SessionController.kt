@@ -9,7 +9,8 @@ import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticStep
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
 import com.vaylith.cleanrepsmobile.diagnostics.StepMessages
 import com.vaylith.cleanrepsmobile.feedback.AthleteSignals
-import com.vaylith.cleanrepsmobile.feedback.CueTones
+import com.vaylith.cleanrepsmobile.feedback.FeedbackCue
+import com.vaylith.cleanrepsmobile.feedback.FeedbackPolicy
 import com.vaylith.cleanrepsmobile.media.CanonicalSourcePublisher
 import com.vaylith.cleanrepsmobile.media.PreviewStatus
 import com.vaylith.cleanrepsmobile.media.PublisherListener
@@ -19,9 +20,17 @@ import com.vaylith.cleanrepsmobile.model.AthleteCue
 import com.vaylith.cleanrepsmobile.model.BlockSelection
 import com.vaylith.cleanrepsmobile.model.CaptureReadiness
 import com.vaylith.cleanrepsmobile.model.ClientIdentity
+import com.vaylith.cleanrepsmobile.model.DrillSelectionStore
+import com.vaylith.cleanrepsmobile.model.LiveAnalysisState
 import com.vaylith.cleanrepsmobile.model.LiveAnalysisStatus
+import com.vaylith.cleanrepsmobile.model.LiveBlockedReason
 import com.vaylith.cleanrepsmobile.model.SourceEpoch
 import com.vaylith.cleanrepsmobile.model.manualEvidenceWindow
+import com.vaylith.cleanrepsmobile.model.phoneText
+import com.vaylith.cleanrepsmobile.ui.PracticeState
+import com.vaylith.cleanrepsmobile.ui.PrimaryAction
+import com.vaylith.cleanrepsmobile.ui.PrimaryActionInputs
+import com.vaylith.cleanrepsmobile.ui.PrimaryActionState
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -35,6 +44,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+
+/**
+ * Holds the screen in its current orientation while video runs (OD-7). The
+ * Activity implements it by setting `requestedOrientation` synchronously on the
+ * main thread, so the lock is in force when the next statement runs.
+ */
+fun interface OrientationLock {
+    fun setLocked(locked: Boolean)
+}
 
 /**
  * The phone's session logic, moved out of `MainActivity` so it runs in JVM tests
@@ -56,8 +74,16 @@ class SessionController(
     private val signals: AthleteSignals,
     private val diagnostics: DiagnosticsLog,
     private val pendingLost: PendingLostStore,
+    /** Shared by every controller of the process: [AppScope.lostDeliveries]. */
+    private val lostDeliveries: LostDeliveries,
+    /** [lostServerKey] of the server [backend] talks to. */
+    private val serverKey: String,
+    private val drills: DrillSelectionStore,
+    private val orientationLock: OrientationLock,
     private val appScope: CoroutineScope,
     uiScope: CoroutineScope,
+    /** True on the main thread: a publisher callback made there is handled at once, as `runOnUiThread` did. */
+    private val isMainThread: () -> Boolean,
     /** Monotonic milliseconds, as `SystemClock.elapsedRealtime`. */
     private val elapsedRealtime: () -> Long,
     private val wallClock: () -> Instant,
@@ -68,15 +94,23 @@ class SessionController(
     initial: AppState,
 ) {
     private val scope = CoroutineScope(uiScope.coroutineContext + SupervisorJob(uiScope.coroutineContext[Job]))
-    private val mutableState = MutableStateFlow(initial)
+    private val mutableState = MutableStateFlow(initial.copy(selection = drills.load()))
     val state: StateFlow<AppState> = mutableState.asStateFlow()
     private val current: AppState get() = mutableState.value
 
-    /** Main thread only. A capture's delivery answers null once the server has answered, else its last failure. */
-    private val lostDeliveries = mutableMapOf<String, Deferred<Exception?>>()
+    /** READY and LOST cues, verdict tones and banners; fed with [elapsedRealtime]. */
+    private val feedback = FeedbackPolicy(voiceHints = initial.voiceHints, speakVerdicts = initial.debugSpeakVerdicts)
 
     /** The capture whose client-info body has been built: each capture gets one body. */
     private var clientInfoCaptureId: String? = null
+
+    /** The last block creation for the drill (OD-8); Start practice waits for it. */
+    private var warmBlock: Job? = null
+
+    /** [FeedbackPolicy.tick] every [TICK_MS] while the video is LIVE. */
+    private var ticks: Job? = null
+
+    private var closed = false
 
     private val listener = object : PublisherListener {
         override fun onPublisherStatus(status: PublisherStatus, detail: String) = onMain { publisherStatus(status, detail) }
@@ -88,52 +122,48 @@ class SessionController(
     /** Replaced with the controller when the connection settings change; released by [close]. */
     val publisher: CanonicalSourcePublisher = newPublisher(listener)
 
-    /** App start (and each new connection): sends every `lost` still pending from an earlier run. */
+    /** App start (and each new connection): sends every `lost` of this server still pending from an earlier run. */
     fun start() {
-        pendingLost.pending().forEach { (captureId, detail) -> lostDelivery(captureId, detail) }
+        ownPendingLost().forEach { (captureId, lost) -> lostDelivery(captureId, lost.detail) }
     }
 
+    /**
+     * Go live. The orientation lock goes on here, at the tap and before anything
+     * else, so it is in force when the publisher reads the display rotation.
+     */
     fun startVideo() {
         val snapshot = current
-        if (snapshot.requestInFlight || snapshot.videoRunning) return
-        val preview = snapshot.preview
-        if (preview is PreviewStatus.CameraError) {
-            // The preview machine still answers Go live during a camera error (M4b), and the stream would carry no picture.
-            diagnostics.info(DiagnosticStep.PUBLISHER_START, "start refused: camera error")
-            update { copy(statusDetail = withAdvice(preview.reason, "Tap Reopen camera, then Start video.")) }
-            return
-        }
+        if (snapshot.requestInFlight || snapshot.videoRunning || refusedForCamera(snapshot)) return
+        lockOrientation(true)
         update { copy(requestInFlight = true, banner = null) }
         scope.launch {
-            var step = DiagnosticStep.CREATE_SESSION
             try {
-                val session = current.sessionId ?: backend.createSession(CHALLENGE_ID).also { created ->
-                    update { copy(sessionId = created) }
-                    subscribe(created)
+                goLive()
+            } finally {
+                update { copy(requestInFlight = false) }
+            }
+        }
+    }
+
+    /**
+     * Restart video, offered when analysis is blocked for a reason only a new
+     * capture clears ([AppState.restartOffered]): stop the video (its capture's
+     * `lost` is persisted and sent), flush pending `lost` reports, attach a new
+     * capture with a new epoch and start again.
+     */
+    fun restartVideo() {
+        val snapshot = current
+        if (snapshot.requestInFlight || refusedForCamera(snapshot)) return
+        diagnostics.info(DiagnosticStep.PUBLISHER_START, "restart video")
+        update { copy(requestInFlight = true, banner = null) }
+        scope.launch {
+            try {
+                if (current.videoRunning) {
+                    publisher.stop()
+                    pausePracticeQuietly()
                 }
-                val capture = current.captureId ?: run {
-                    step = DiagnosticStep.HEALTH
-                    if (!flushPendingLost()) return@launch
-                    step = DiagnosticStep.ATTACH_CAPTURE
-                    backend.attachCapture(session, sourceId, current.epoch)
-                }
-                update { copy(captureId = capture) }
-                step = DiagnosticStep.PUBLISHER_START
-                if (!isScreenVisible()) {
-                    diagnostics.info(step, "not started: the camera screen is not visible")
-                    update { copy(statusDetail = "Video not started because Clean Reps left the screen.") }
-                    return@launch
-                }
-                when (val result = publisher.start(current.epoch)) {
-                    // Only the transport callback can claim LIVE; the stream's geometry is prepared now (I8).
-                    is PublisherResult.Connecting, is PublisherResult.Live -> sendClientInfo(capture)
-                    is PublisherResult.Blocked -> update { copy(readiness = CaptureReadiness.PUBLISHER_UNAVAILABLE, statusDetail = result.reason) }
-                    is PublisherResult.Failed -> update { copy(readiness = CaptureReadiness.ERROR, statusDetail = result.reason) }
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                showFailure(step, "start video", error)
+                lockOrientation(true)
+                goLive()
             } finally {
                 update { copy(requestInFlight = false) }
             }
@@ -161,12 +191,18 @@ class SessionController(
         update {
             copy(captureId = null, epoch = if (capture != null) epoch.next() else epoch, blockReady = false, practiceActive = false, banner = LEFT_SCREEN_BANNER)
         }
+        feedback.onPracticeStopped(elapsedRealtime())
         scope.launch {
             publisher.stop()
             pausePracticeQuietly()
         }
     }
 
+    /**
+     * OD-6: no confirmation and no gate; the analyzer allows no kick before a
+     * confirmed upright head-to-ankle lock, and the phone chirps when tracking
+     * begins. The first Start of a block marks it reacquired; later taps resume it.
+     */
     fun startPractice() {
         val snapshot = current
         val session = snapshot.sessionId ?: return
@@ -176,19 +212,26 @@ class SessionController(
         scope.launch {
             var step = DiagnosticStep.CREATE_BLOCK
             try {
-                val previousBlock = current.blockId
-                val block = previousBlock ?: backend.createBlock(session, current.selection)
-                update { copy(blockId = block) }
+                warmBlock?.join()
+                val block = current.blockId ?: backend.createBlock(session, current.selection).also { created ->
+                    update { copy(blockId = created, practiceStarted = false) }
+                }
+                val resuming = current.practiceStarted
                 step = DiagnosticStep.MARK_REACQUIRED
                 backend.markReacquired(session, block)
                 step = DiagnosticStep.RESUME
-                if (previousBlock != null) backend.resumePractice(session, block)
+                if (resuming) backend.resumePractice(session, block)
                 if (current.captureId == capture && current.readiness == CaptureReadiness.LIVE && isScreenVisible()) {
-                    update { copy(blockReady = true, practiceActive = true, statusDetail = "Practice active. Video continues independently.") }
+                    update {
+                        copy(blockReady = true, practiceActive = true, practiceStarted = true, feedbackBanner = null,
+                            statusDetail = "Practice active. Video continues independently.")
+                    }
+                    val now = elapsedRealtime()
+                    play(if (resuming) feedback.onPracticeResumed(now) else feedback.onPracticeStarted(now))
                 } else {
                     step = DiagnosticStep.PAUSE
                     backend.pausePractice(session, block)
-                    update { copy(blockReady = false, practiceActive = false) }
+                    update { copy(blockReady = false, practiceActive = false, practiceStarted = true) }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -206,6 +249,7 @@ class SessionController(
         scope.launch {
             try {
                 pause()
+                play(feedback.onPracticePaused(elapsedRealtime()))
                 update { copy(statusDetail = "Practice paused. Video continues.") }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -217,14 +261,42 @@ class SessionController(
         }
     }
 
+    /**
+     * A drill change is refused while practice is active and for a technique that
+     * is not judged automatically (OD-5). It is saved on this phone, and while the
+     * video is LIVE it gets a new block at once, waiting for Start practice.
+     */
     fun selectDrill(selection: BlockSelection) {
         val snapshot = current
-        if (!snapshot.practiceActive && !snapshot.requestInFlight && selection != snapshot.selection) {
-            update { copy(selection = selection, blockId = null, blockReady = false, statusDetail = "Drill selected. Start practice when ready.") }
+        if (selection == snapshot.selection || snapshot.requestInFlight) return
+        if (snapshot.practiceActive) {
+            update { copy(statusDetail = "Pause practice to change the drill.") }
+            return
         }
+        if (!selection.technique.autoJudged) {
+            update { copy(statusDetail = phoneText(LiveAnalysisState.BLOCKED, LiveBlockedReason.UNSUPPORTED_PRACTICE_TECHNIQUE)) }
+            return
+        }
+        try {
+            drills.save(selection)
+        } catch (error: Exception) {
+            // The drill still applies to this session; only the choice for the next start is not remembered.
+            diagnostics.fail(DiagnosticStep.CREATE_BLOCK, "drill choice not saved on this phone", error)
+        }
+        update { copy(selection = selection, blockId = null, blockReady = false, practiceStarted = false, statusDetail = "Drill selected. Start practice when ready.") }
+        ensureWarmBlock()
     }
 
-    fun toggleSpeakVerdicts() = update { copy(debugSpeakVerdicts = !debugSpeakVerdicts) }
+    fun toggleSpeakVerdicts() {
+        update { copy(debugSpeakVerdicts = !debugSpeakVerdicts) }
+        feedback.speakVerdicts = current.debugSpeakVerdicts
+    }
+
+    /** OD-4: spoken hints with LOST, on by default. */
+    fun toggleVoiceHints() {
+        update { copy(voiceHints = !voiceHints) }
+        feedback.voiceHints = current.voiceHints
+    }
 
     /** "Reopen camera" after a camera error: one new attempt to open the camera and start the preview. */
     fun reopenCamera() = publisher.reopenCamera()
@@ -260,9 +332,65 @@ class SessionController(
     fun close() {
         current.captureId?.let { endCapture(it, HealthDetail.STOPPED) }
         update { copy(captureId = null) }
+        closed = true
+        stopTicks()
+        lockOrientation(false)
         events.stop()
         publisher.release()
         scope.cancel()
+    }
+
+    /**
+     * Steps 2-4 of Go live are the publisher's `start`: it reads the display
+     * rotation, passes `streamRequested` for that geometry through the state
+     * machine (which re-prepares first if needed, I8) and only then starts the
+     * stream. There is no second geometry path here. A start that does not end
+     * with the video running releases the orientation lock.
+     */
+    private suspend fun goLive() {
+        var step = DiagnosticStep.CREATE_SESSION
+        try {
+            val session = current.sessionId ?: backend.createSession(CHALLENGE_ID).also { created ->
+                update { copy(sessionId = created) }
+                subscribe(created)
+            }
+            val capture = current.captureId ?: run {
+                step = DiagnosticStep.HEALTH
+                if (!flushPendingLost()) return
+                step = DiagnosticStep.ATTACH_CAPTURE
+                backend.attachCapture(session, sourceId, current.epoch)
+            }
+            update { copy(captureId = capture) }
+            step = DiagnosticStep.PUBLISHER_START
+            if (!isScreenVisible()) {
+                diagnostics.info(step, "not started: the camera screen is not visible")
+                update { copy(statusDetail = "Video not started because Clean Reps left the screen.") }
+                return
+            }
+            when (val result = publisher.start(current.epoch)) {
+                // Only the transport callback can claim LIVE.
+                is PublisherResult.Connecting, is PublisherResult.Live -> {
+                    update { copy(streamGeometry = publisher.preparedGeometry?.label) }
+                    sendClientInfo(capture)
+                }
+                is PublisherResult.Blocked -> update { copy(readiness = CaptureReadiness.PUBLISHER_UNAVAILABLE, statusDetail = result.reason) }
+                is PublisherResult.Failed -> update { copy(readiness = CaptureReadiness.ERROR, statusDetail = result.reason) }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            showFailure(step, "start video", error)
+        } finally {
+            if (!current.videoRunning) lockOrientation(false)
+        }
+    }
+
+    /** The preview machine still answers Go live during a camera error (M4b), and the stream would carry no picture. */
+    private fun refusedForCamera(snapshot: AppState): Boolean {
+        val preview = snapshot.preview as? PreviewStatus.CameraError ?: return false
+        diagnostics.info(DiagnosticStep.PUBLISHER_START, "start refused: camera error")
+        update { copy(statusDetail = withAdvice(preview.reason, "Tap Reopen camera, then Start video.")) }
+        return true
     }
 
     private fun publisherStatus(status: PublisherStatus, detail: String) {
@@ -279,8 +407,13 @@ class SessionController(
             copy(
                 readiness = readiness, statusDetail = detail,
                 captureStartedAtElapsedMs = if (stopped) null else if (readiness == CaptureReadiness.LIVE) captureStartedAtElapsedMs ?: elapsedRealtime() else captureStartedAtElapsedMs,
+                streamGeometry = if (stopped) null else streamGeometry,
             )
         }
+        // The lock follows the transport: on through CONNECTING, LIVE and RECONNECTING, off once the video has stopped.
+        lockOrientation(!stopped)
+        if (readiness == CaptureReadiness.LIVE) startTicks() else stopTicks()
+        if (stopped) feedback.onPracticeStopped(elapsedRealtime())
         if (capture == null) return
         if (stopped) {
             val cameraFailed = readiness == CaptureReadiness.ERROR && current.preview is PreviewStatus.CameraError
@@ -290,6 +423,7 @@ class SessionController(
             scope.launch { pausePracticeQuietly() }
         } else if (readiness == CaptureReadiness.LIVE) {
             reportHealth(capture, SourceHealth.HEALTHY, HealthDetail.LIVE)
+            ensureWarmBlock()
         } else {
             reportHealth(capture, SourceHealth.DEGRADED, HealthDetail.RECONNECTING)
         }
@@ -303,6 +437,8 @@ class SessionController(
             copy(epoch = epoch, blockReady = false, practiceActive = false, captureId = null, captureStartedAtElapsedMs = null,
                 readiness = CaptureReadiness.RECONNECTING, statusDetail = "Video reconnecting. Resume practice after checking the preview.")
         }
+        stopTicks()
+        play(feedback.onPracticePaused(elapsedRealtime()))
         if (session == null) return
         scope.launch {
             pausePracticeQuietly()
@@ -314,8 +450,12 @@ class SessionController(
                 if (current.sessionId == session && current.epoch == epoch && current.videoRunning) {
                     update { copy(captureId = capture) }
                     sendClientInfo(capture)
-                    if (current.readiness == CaptureReadiness.LIVE) reportHealth(capture, SourceHealth.HEALTHY, HealthDetail.LIVE)
-                    else reportHealth(capture, SourceHealth.DEGRADED, HealthDetail.RECONNECTING)
+                    if (current.readiness == CaptureReadiness.LIVE) {
+                        reportHealth(capture, SourceHealth.HEALTHY, HealthDetail.LIVE)
+                        ensureWarmBlock()
+                    } else {
+                        reportHealth(capture, SourceHealth.DEGRADED, HealthDetail.RECONNECTING)
+                    }
                 } else {
                     // The video stopped or reconnected again meanwhile: this capture will never carry video.
                     endCapture(capture, HealthDetail.STOPPED)
@@ -337,6 +477,35 @@ class SessionController(
         update { copy(preview = status, previewDetail = detail) }
     }
 
+    /**
+     * OD-8, warm start: the block for the current drill is created as soon as the
+     * video is LIVE with a session and a capture, so the analyzer runs (paused)
+     * and confirms its lock before Start practice. A new block waits for
+     * `markReacquired`, so nothing is judged before Start. Each creation waits for
+     * the previous one and then uses the drill selected at that moment.
+     */
+    private fun ensureWarmBlock() {
+        val previous = warmBlock
+        warmBlock = scope.launch {
+            previous?.join()
+            val snapshot = current
+            val session = snapshot.sessionId ?: return@launch
+            if (snapshot.blockId != null || snapshot.readiness != CaptureReadiness.LIVE || snapshot.captureId == null) return@launch
+            val selection = snapshot.selection
+            try {
+                val block = backend.createBlock(session, selection)
+                // A drill changed meanwhile gets its own block from the next creation.
+                if (current.sessionId == session && current.selection == selection && current.blockId == null) {
+                    update { copy(blockId = block, blockReady = false, practiceStarted = false) }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                showFailure(DiagnosticStep.CREATE_BLOCK, "create the block at LIVE", error, "Analysis starts when you tap Start practice.")
+            }
+        }
+    }
+
     private fun subscribe(session: String) {
         events.start(
             scope,
@@ -346,21 +515,58 @@ class SessionController(
             onCueSafe = { cue -> signals.speak(cue.text) },
             onError = { message -> update { copy(statusDetail = message) } },
             onChallengeTotal = { total -> update { copy(challengeOfficialAcceptedCount = total) } },
-            onLiveAnalysis = { status -> update { copy(liveAnalysis = status) } },
+            onLiveAnalysis = { status ->
+                update { copy(liveAnalysis = status) }
+                play(feedback.onStatus(status, elapsedRealtime()))
+            },
             onSessionCounts = { counts -> update { copy(sessionCounts = counts) } },
         )
     }
 
-    /** Until FeedbackPolicy is wired (M6b): accepted and rejected sound, pending and unjudgeable are silent. */
+    /**
+     * FeedbackPolicy decides: accepted and rejected sound, pending and unjudgeable
+     * only raise the banner (which the next verdict replaces), and Speak verdicts
+     * uses its phrase mapping.
+     */
     private fun verdict(verdict: MobileVerdictEvent) {
-        CueTones.forVerdict(verdict.verdictClass)?.let(signals::cue)
-        if (current.debugSpeakVerdicts) signals.speak(verdict.reasonCode)
+        val cues = feedback.onVerdict(verdict.verdictClass, verdict.reasonCode, elapsedRealtime())
+        update { copy(feedbackBanner = cues.filterIsInstance<FeedbackCue.Banner>().lastOrNull()?.text) }
+        play(cues)
     }
 
+    /** Tones and speech go to AthleteFeedback.cue; banners are state, never sound. */
+    private fun play(cues: List<FeedbackCue>) {
+        cues.filterNot { it is FeedbackCue.Banner }.forEach(signals::cue)
+    }
+
+    /** Time-based READY and LOST cues fire without new stream events; a steady state produces none. */
+    private fun startTicks() {
+        if (ticks?.isActive == true) return
+        ticks = scope.launch {
+            while (true) {
+                delay(TICK_MS)
+                play(feedback.tick(elapsedRealtime()))
+            }
+        }
+    }
+
+    private fun stopTicks() {
+        ticks?.cancel()
+        ticks = null
+    }
+
+    /** Applied synchronously through the port, before anything else runs. */
+    private fun lockOrientation(locked: Boolean) {
+        if (current.orientationLocked == locked) return
+        orientationLock.setLocked(locked)
+        update { copy(orientationLocked = locked) }
+    }
+
+    /** A block that practice never started still waits for `markReacquired`, so analysis is already paused for it. */
     private suspend fun pause() {
         val session = current.sessionId
         val block = current.blockId
-        if (session != null && block != null) backend.pausePractice(session, block)
+        if (session != null && block != null && current.practiceStarted) backend.pausePractice(session, block)
         update { copy(practiceActive = false, blockReady = false) }
     }
 
@@ -391,7 +597,7 @@ class SessionController(
     /** The terminal report: persisted first, then sent on [appScope]. */
     private fun endCapture(captureId: String, detail: HealthDetail) {
         try {
-            pendingLost.add(captureId, detail)
+            pendingLost.add(captureId, PendingLost(detail, serverKey))
         } catch (error: Exception) {
             // It is still sent below; only a process death before it arrives can lose it now.
             diagnostics.fail(DiagnosticStep.HEALTH, "could not persist lost for capture $captureId", error)
@@ -399,12 +605,14 @@ class SessionController(
         lostDelivery(captureId, detail)
     }
 
-    /** The delivery already running for [captureId], or a new one. */
-    private fun lostDelivery(captureId: String, detail: HealthDetail): Deferred<Exception?> {
-        lostDeliveries.values.removeAll { it.isCompleted }
-        return lostDeliveries[captureId]
-            ?: appScope.async { deliverLost(captureId, detail) }.also { lostDeliveries[captureId] = it }
+    /** The pending reports that belong to this controller's server. */
+    private fun ownPendingLost(): Map<String, PendingLost> = pendingLost.pending().filterValues {
+        it.server == serverKey || it.server == SharedPreferencesPendingLostStore.ANY_SERVER
     }
+
+    /** The delivery already running for [captureId] anywhere in the process, or a new one. */
+    private fun lostDelivery(captureId: String, detail: HealthDetail): Deferred<Exception?> =
+        lostDeliveries.runOrJoin(captureId) { appScope.async { deliverLost(captureId, detail) } }
 
     /**
      * Runs on [appScope]: up to [LOST_ATTEMPTS] attempts with backoff. Touches only
@@ -446,17 +654,19 @@ class SessionController(
     }
 
     /**
-     * Before any new capture is attached: sends every pending `lost`, joining a
-     * delivery already under way. False, with the reason shown, while any is
-     * still pending; no second capture is attached then.
+     * Before any new capture is attached: sends every pending `lost` of this
+     * server, joining a delivery already under way anywhere in the process.
+     * False, with the reason shown, while any is still pending; no second
+     * capture is attached then. Another server's reports neither go here nor
+     * hold anything up.
      */
     private suspend fun flushPendingLost(): Boolean {
-        val pending = pendingLost.pending()
+        val pending = ownPendingLost()
         if (pending.isEmpty()) return true
         update { copy(statusDetail = "Reporting the last video as ended...") }
         var failure: Exception? = null
-        pending.forEach { (captureId, detail) -> lostDelivery(captureId, detail).await()?.let { failure = it } }
-        if (pendingLost.pending().isEmpty()) return true
+        pending.forEach { (captureId, lost) -> lostDelivery(captureId, lost.detail).await()?.let { failure = it } }
+        if (ownPendingLost().isEmpty()) return true
         val reason = failure?.let { ownerMessage(DiagnosticStep.HEALTH, it) }
         update { copy(statusDetail = withAdvice(reason ?: "The last video is still open on the server.", "No new video starts until it is reported as ended; try again.")) }
         return false
@@ -544,8 +754,18 @@ class SessionController(
         return code in 400..499 && code != 408 && code != 429
     }
 
+    /**
+     * A callback made on the main thread (the publisher's start and stop) is
+     * handled before the call returns, so later statements see its effect; one
+     * from a RootEncoder thread is posted to the main thread.
+     */
     private fun onMain(block: () -> Unit) {
-        scope.launch { block() }
+        if (closed) return
+        if (isMainThread()) {
+            block()
+        } else {
+            scope.launch { if (!closed) block() }
+        }
     }
 
     private inline fun update(change: AppState.() -> AppState) {
@@ -561,6 +781,9 @@ class SessionController(
 
         /** The waits before the second and the third attempt. */
         val RETRY_BACKOFF_MS = listOf(1_000L, 4_000L)
+
+        /** The FeedbackPolicy tick period while the video is LIVE. */
+        const val TICK_MS = 250L
 
         const val LEFT_SCREEN_BANNER = "Video stopped because Clean Reps left the screen. Tap Go live."
     }
@@ -600,6 +823,8 @@ data class AppState(
     val blockId: String? = null,
     val blockReady: Boolean = false,
     val practiceActive: Boolean = false,
+    /** Start practice has been tapped for the current block, so the next tap resumes it. */
+    val practiceStarted: Boolean = false,
     val captureId: String? = null,
     val captureStartedAtElapsedMs: Long? = null,
     val lastManualKickEventId: String? = null,
@@ -608,6 +833,8 @@ data class AppState(
     val readiness: CaptureReadiness = CaptureReadiness.NOT_CONFIGURED,
     val statusDetail: String = "Configure private API and real canonical publisher before official capture.",
     val debugSpeakVerdicts: Boolean = false,
+    /** OD-4: speak the reason together with LOST. */
+    val voiceHints: Boolean = FeedbackPolicy.VOICE_HINTS_DEFAULT,
     val activeCue: AthleteCue? = null,
     val challengeOfficialAcceptedCount: Long? = null,
     /** A server or video request started from the screen has not finished. */
@@ -617,10 +844,18 @@ data class AppState(
     val previewDetail: String = "",
     /** Why video stopped, kept until the next Start video. */
     val banner: String? = null,
+    /** FeedbackPolicy's banner for the last verdict, e.g. an unjudgeable one. */
+    val feedbackBanner: String? = null,
+    /** OD-7: the screen orientation is locked, from the Go-live tap until the video stops. */
+    val orientationLocked: Boolean = false,
+    /** The label of the geometry the stream was started with, e.g. "landscape 1280x720". */
+    val streamGeometry: String? = null,
     val liveAnalysis: LiveAnalysisStatus? = null,
     val sessionCounts: SessionCounts? = null,
 ) {
     val videoRunning: Boolean get() = readiness in VIDEO_RUNNING
+
+    val practice: PracticeState get() = PracticeState.of(practiceActive, practiceStarted)
 
     /** A camera error (also while streaming) or a rotation that waits until video stops. */
     val previewBanner: String?
@@ -628,4 +863,27 @@ data class AppState(
             is PreviewStatus.CameraError, is PreviewStatus.RotationPending -> previewDetail
             else -> null
         }
+
+    /** The LIVE pill, e.g. "LIVE - landscape 1280x720". */
+    val livePill: String? get() = streamGeometry?.takeIf { readiness == CaptureReadiness.LIVE }?.let { "LIVE - $it" }
+
+    val sessionCountsText: String? get() = sessionCounts?.let { "This session ${it.accepted} accepted - ${it.rejected} rejected" }
+
+    /**
+     * Restart video is offered while LIVE when analysis is blocked for a reason
+     * only a new capture clears (`waiting_for_new_capture_epoch`,
+     * `worker_retry_limit`, `ambiguous_active_sessions`); the rule is M3c's.
+     */
+    val restartOffered: Boolean
+        get() = PrimaryActionState.from(
+            PrimaryActionInputs(
+                readiness = readiness,
+                practice = practice,
+                inFlight = requestInFlight,
+                configured = true,
+                permission = true,
+                captureAttached = captureId != null,
+                liveAnalysis = liveAnalysis,
+            ),
+        ).hintAction == PrimaryAction.RESTART_VIDEO
 }

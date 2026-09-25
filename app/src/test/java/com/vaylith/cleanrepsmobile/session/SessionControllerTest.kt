@@ -17,24 +17,35 @@ import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
 import com.vaylith.cleanrepsmobile.diagnostics.FailureKind
 import com.vaylith.cleanrepsmobile.feedback.AthleteSignals
 import com.vaylith.cleanrepsmobile.feedback.FeedbackCue
+import com.vaylith.cleanrepsmobile.feedback.FeedbackPolicy
 import com.vaylith.cleanrepsmobile.media.CanonicalSourcePublisher
 import com.vaylith.cleanrepsmobile.media.CaptureGeometry
+import com.vaylith.cleanrepsmobile.media.FakeEncoderPort
+import com.vaylith.cleanrepsmobile.media.FakeSurface
+import com.vaylith.cleanrepsmobile.media.PreviewCoordinator
 import com.vaylith.cleanrepsmobile.media.PreviewStatus
 import com.vaylith.cleanrepsmobile.media.PublisherListener
 import com.vaylith.cleanrepsmobile.media.PublisherResult
 import com.vaylith.cleanrepsmobile.media.PublisherStatus
+import com.vaylith.cleanrepsmobile.media.StreamGate
 import com.vaylith.cleanrepsmobile.model.AthleteCue
 import com.vaylith.cleanrepsmobile.model.BlockSelection
 import com.vaylith.cleanrepsmobile.model.CaptureReadiness
 import com.vaylith.cleanrepsmobile.model.ClientIdentity
+import com.vaylith.cleanrepsmobile.model.DrillSelectionStore
 import com.vaylith.cleanrepsmobile.model.KickSide
+import com.vaylith.cleanrepsmobile.model.KickTechnique
+import com.vaylith.cleanrepsmobile.model.LiveAnalysisState
 import com.vaylith.cleanrepsmobile.model.LiveAnalysisStatus
+import com.vaylith.cleanrepsmobile.model.LiveBlockedReason
 import com.vaylith.cleanrepsmobile.model.ManualEvidenceWindow
 import com.vaylith.cleanrepsmobile.model.SourceEpoch
 import com.vaylith.cleanrepsmobile.model.VerdictClass
+import com.vaylith.cleanrepsmobile.ui.PracticeState
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.time.Instant
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
@@ -66,11 +77,17 @@ class SessionControllerTest {
     private val log = DiagnosticsLog(clock = { 1_000L }, sink = { _, _, _ -> })
     private val preferences = FakePreferences()
     private val store = SharedPreferencesPendingLostStore(preferences)
+    /** One ordered record of lock, backend and publisher calls, to check what happens before what. */
+    private val order = mutableListOf<String>()
     private val backend = FakeBackend()
     private val events = FakeEvents()
-    private val signals = RecordingSignals()
+    private val signals = RecordingSignals { scheduler.currentTime }
+    private val drills = MemoryDrills()
+    /** One per process in the app ([AppScope.lostDeliveries]); shared by every controller of a test. */
+    private val lostDeliveries = LostDeliveries()
     private var visible = true
     private var wallClockReads = 0L
+    private var clockReads = 0
     private lateinit var publisher: FakePublisher
 
     @After fun tearDown() {
@@ -78,16 +95,27 @@ class SessionControllerTest {
         appScope.cancel()
     }
 
-    private fun controller(initial: AppState = AppState()) = SessionController(
+    private fun controller(
+        initial: AppState = AppState(),
+        backend: FakeBackend = this.backend,
+        server: String = SERVER,
+        newPublisher: (PublisherListener) -> CanonicalSourcePublisher = { listener -> FakePublisher(listener, order).also { publisher = it } },
+    ) = SessionController(
         backend = backend,
         events = events,
-        newPublisher = { listener -> FakePublisher(listener).also { publisher = it } },
+        newPublisher = newPublisher,
         signals = signals,
         diagnostics = log,
         pendingLost = store,
+        lostDeliveries = lostDeliveries,
+        serverKey = server,
+        drills = drills,
+        orientationLock = { locked -> order += if (locked) "lock" else "unlock" },
         appScope = appScope,
         uiScope = uiScope,
-        elapsedRealtime = { 50_000L },
+        isMainThread = { true },
+        // The virtual time of the test scheduler, so the FeedbackPolicy tick and its clock agree.
+        elapsedRealtime = { clockReads++; scheduler.currentTime },
         // Every read gives a new instant, so a body built twice would differ.
         wallClock = { START.plusSeconds(wallClockReads++) },
         isScreenVisible = { visible },
@@ -106,9 +134,22 @@ class SessionControllerTest {
         assertEquals("capture-1", controller.state.value.captureId)
     }
 
-    private fun settle() = scheduler.advanceUntilIdle()
+    /**
+     * Runs everything due within [SETTLE_MS] of virtual time: every backoff and
+     * retry. Never advanceUntilIdle: while the video is LIVE the FeedbackPolicy
+     * tick is always due again.
+     */
+    private fun settle() {
+        scheduler.advanceTimeBy(SETTLE_MS)
+        scheduler.runCurrent()
+    }
 
     private fun lostCalls() = backend.health.filter { it.status == "lost" }
+
+    private fun pending(detail: HealthDetail) = PendingLost(detail, SERVER)
+
+    private fun status(state: LiveAnalysisState, reason: LiveBlockedReason? = null, stale: Boolean = false) =
+        LiveAnalysisStatus(state = state, reasonCode = reason, stale = stale)
 
     @Test fun `lost survives cancellation of the UI scope and is persisted before it is sent`() {
         val controller = live()
@@ -116,7 +157,7 @@ class SessionControllerTest {
 
         controller.onLeftScreen()
         // Persisted synchronously at ON_STOP, before any attempt runs.
-        assertEquals(mapOf("capture-1" to HealthDetail.LEFT_SCREEN), store.pending())
+        assertEquals(mapOf("capture-1" to pending(HealthDetail.LEFT_SCREEN)), store.pending())
         assertTrue(lostCalls().isEmpty())
         // The Activity is destroyed: its scope (and the controller's) is cancelled.
         uiScope.cancel()
@@ -137,7 +178,7 @@ class SessionControllerTest {
         repeat(3) { backend.failNext("lost", apiFailure(DiagnosticStep.HEALTH, FailureKind.Timeout)) }
 
         controller.stopVideo()
-        assertEquals(mapOf("capture-1" to HealthDetail.STOPPED), store.pending())
+        assertEquals(mapOf("capture-1" to pending(HealthDetail.STOPPED)), store.pending())
         uiScope.cancel()
 
         scheduler.advanceTimeBy(1)
@@ -148,13 +189,13 @@ class SessionControllerTest {
         assertEquals(3, lostCalls().size)
         settle()
         assertEquals(3, lostCalls().size)
-        assertEquals(mapOf("capture-1" to HealthDetail.STOPPED), store.pending())
+        assertEquals(mapOf("capture-1" to pending(HealthDetail.STOPPED)), store.pending())
         assertTrue(log.entries().any { it.step == DiagnosticStep.HEALTH && "still pending after 3 attempts" in it.redactedMessage })
         assertNull(controller.state.value.captureId)
     }
 
     @Test fun `pending lost reports are flushed on app start`() {
-        store.add("capture-old", HealthDetail.LEFT_SCREEN)
+        store.add("capture-old", pending(HealthDetail.LEFT_SCREEN))
         controller()
         settle()
         assertEquals(listOf(HealthCall("capture-old", "lost", "left the screen", setOf("capture-old"))), backend.health)
@@ -162,7 +203,7 @@ class SessionControllerTest {
     }
 
     @Test fun `a pending lost is flushed before a new capture is attached`() {
-        store.add("capture-old", HealthDetail.STOPPED)
+        store.add("capture-old", pending(HealthDetail.STOPPED))
         // The start-up flush fails once; Start video joins that delivery, which then succeeds.
         backend.failNext("lost", apiFailure(DiagnosticStep.HEALTH, FailureKind.Unreachable))
         val controller = controller()
@@ -180,7 +221,7 @@ class SessionControllerTest {
     }
 
     @Test fun `no second capture is attached while a lost is still pending`() {
-        store.add("capture-old", HealthDetail.STOPPED)
+        store.add("capture-old", pending(HealthDetail.STOPPED))
         // Every attempt of the first flush fails; the server answers again afterwards.
         repeat(SessionController.LOST_ATTEMPTS) { backend.failNext("lost", apiFailure(DiagnosticStep.HEALTH, FailureKind.Unreachable)) }
         val controller = controller()
@@ -205,7 +246,7 @@ class SessionControllerTest {
     }
 
     @Test fun `a lost the server refuses is dropped, so it never blocks the next capture`() {
-        store.add("capture-unknown", HealthDetail.STOPPED)
+        store.add("capture-unknown", pending(HealthDetail.STOPPED))
         backend.failNext("lost", apiFailure(DiagnosticStep.HEALTH, FailureKind.Http(409)))
         val controller = controller()
         controller.startVideo()
@@ -418,11 +459,17 @@ class SessionControllerTest {
         assertEquals(DiagnosticStep.PUBLISHER_START, entry.step)
         assertEquals("IllegalStateException", entry.errorClass)
 
+        // One failure for the block created at LIVE (M6b warm start), one for Start practice's own attempt.
+        backend.failNext("createBlock", SocketTimeoutException(MARKER))
         backend.failNext("createBlock", SocketTimeoutException(MARKER))
         publisher.startFailure = null
         controller.startVideo()
         settle()
         publisher.live()
+        assertEquals(
+            "Couldn't reach Clean Reps for start practice (timeout) — is Tailscale on? Analysis starts when you tap Start practice.",
+            controller.state.value.statusDetail,
+        )
         controller.startPractice()
         settle()
         assertEquals("Couldn't reach Clean Reps for start practice (timeout) — is Tailscale on? Video is still available.", controller.state.value.statusDetail)
@@ -452,7 +499,9 @@ class SessionControllerTest {
         assertEquals("Practice paused. Video continues.", controller.state.value.statusDetail)
 
         controller.selectDrill(BlockSelection(side = KickSide.LEFT))
-        assertNull(controller.state.value.blockId)
+        // M6b warm start: while LIVE the new drill gets its block at once, not yet started.
+        assertEquals("block-2", controller.state.value.blockId)
+        assertEquals(PracticeState.NOT_STARTED, controller.state.value.practice)
         controller.startPractice()
         settle()
         controller.pausePractice()
@@ -481,7 +530,7 @@ class SessionControllerTest {
         assertEquals("capture-1", controller.state.value.captureId)
 
         controller.close()
-        assertEquals(mapOf("capture-1" to HealthDetail.STOPPED), store.pending())
+        assertEquals(mapOf("capture-1" to pending(HealthDetail.STOPPED)), store.pending())
         assertTrue("release" in publisher.calls)
         assertEquals(1, events.stops)
         settle()
@@ -491,14 +540,14 @@ class SessionControllerTest {
 
     @Test fun `a capture attached after the video stopped is reported lost instead of left open`() {
         val controller = live()
-        backend.suspendAttach = true
+        val attach = backend.hold("attachCapture")
         publisher.listener.onSourceDiscontinuity("SRT publisher disconnected.")
         publisher.listener.onPublisherStatus(PublisherStatus.RECONNECTING, "Publisher disconnected; retrying.")
         settle()
         assertNull(controller.state.value.captureId)
         controller.stopVideo()
         settle()
-        backend.releaseAttach()
+        attach.complete(Unit)
         settle()
         assertNull(controller.state.value.captureId)
         assertEquals(listOf(HealthCall("capture-2", "lost", "stopped", setOf("capture-2"))), lostCalls())
@@ -514,20 +563,367 @@ class SessionControllerTest {
     }
 
     @Test fun `the SharedPreferences store keeps allowlisted details and reads anything else as stopped`() {
-        store.add("capture-a", HealthDetail.LEFT_SCREEN)
-        store.add("capture-b", HealthDetail.CAMERA_UNAVAILABLE)
+        store.add("capture-a", pending(HealthDetail.LEFT_SCREEN))
+        store.add("capture-b", PendingLost(HealthDetail.CAMERA_UNAVAILABLE, OTHER_SERVER))
         preferences.values["capture-c"] = "Publisher disconnected $MARKER"
         assertEquals(
-            mapOf("capture-a" to HealthDetail.LEFT_SCREEN, "capture-b" to HealthDetail.CAMERA_UNAVAILABLE, "capture-c" to HealthDetail.STOPPED),
+            mapOf(
+                "capture-a" to pending(HealthDetail.LEFT_SCREEN),
+                "capture-b" to PendingLost(HealthDetail.CAMERA_UNAVAILABLE, OTHER_SERVER),
+                // No server key: it belongs to no server in particular.
+                "capture-c" to PendingLost(HealthDetail.STOPPED, SharedPreferencesPendingLostStore.ANY_SERVER),
+            ),
             store.pending(),
         )
-        assertEquals("left the screen", preferences.values["capture-a"])
+        assertEquals("$SERVER|left the screen", preferences.values["capture-a"])
         store.remove("capture-a")
         assertEquals(setOf("capture-b", "capture-c"), store.pending().keys)
         preferences.commitSucceeds = false
-        assertThrows(IllegalStateException::class.java) { store.add("capture-d", HealthDetail.STOPPED) }
+        assertThrows(IllegalStateException::class.java) { store.add("capture-d", pending(HealthDetail.STOPPED)) }
         assertEquals(ALLOWLIST, HealthDetail.entries.map { it.wireValue }.toSet())
     }
+
+    @Test fun `the server key is a stable digest that never contains the address`() {
+        val key = lostServerKey("http://api.example.test:8443")
+        assertEquals(key, lostServerKey("http://api.example.test:8443/"))
+        assertEquals(key, lostServerKey(" http://api.example.test:8443 "))
+        assertTrue(key, Regex("[0-9a-f]{16}").matches(key))
+        assertFalse(key == lostServerKey("http://192.0.2.10:8443"))
+        assertFalse("example" in key)
+    }
+
+    // ---- M6b: warm start, drill changes, orientation lock, Restart video, FeedbackPolicy ----
+
+    @Test fun `LIVE creates the block before Start, Start marks it reacquired and Resume resumes it (OD-8)`() {
+        val controller = live()
+        assertEquals(listOf("createBlock"), backend.calls.filter { it in PRACTICE_CALLS })
+        assertEquals("block-1", controller.state.value.blockId)
+        assertFalse(controller.state.value.practiceActive)
+        assertEquals(PracticeState.NOT_STARTED, controller.state.value.practice)
+
+        controller.startPractice()
+        settle()
+        assertEquals(listOf("createBlock", "markReacquired"), backend.calls.filter { it in PRACTICE_CALLS })
+        assertEquals(PracticeState.ACTIVE, controller.state.value.practice)
+        controller.pausePractice()
+        settle()
+        assertEquals(PracticeState.PAUSED, controller.state.value.practice)
+        controller.startPractice()
+        settle()
+        assertEquals(
+            listOf("createBlock", "markReacquired", "pausePractice", "markReacquired", "resumePractice"),
+            backend.calls.filter { it in PRACTICE_CALLS },
+        )
+
+        // LIVE again after a reconnect keeps the block.
+        publisher.listener.onPublisherStatus(PublisherStatus.RECONNECTING, "Publisher disconnected; retrying.")
+        publisher.live()
+        settle()
+        assertEquals(1, backend.calls.count { it == "createBlock" })
+    }
+
+    @Test fun `Start practice never asks for a confirmation, whatever the live status says (OD-6)`() {
+        val controller = live()
+        val planted = listOf(
+            LiveAnalysisState.NO_PERSON, LiveAnalysisState.SIDEWAYS, LiveAnalysisState.HEAD_CUT,
+            LiveAnalysisState.FEET_CUT, LiveAnalysisState.MULTIPLE_PEOPLE, LiveAnalysisState.ACQUIRING,
+        )
+        for (state in planted) {
+            events.onLiveAnalysis(status(state))
+            val before = backend.calls.count { it == "markReacquired" }
+            // The tap itself goes to the server; nothing waits for an answer from the athlete.
+            controller.startPractice()
+            assertEquals(state.name, before + 1, backend.calls.count { it == "markReacquired" })
+            assertTrue(state.name, controller.state.value.practiceActive)
+            controller.pausePractice()
+            settle()
+        }
+    }
+
+    @Test fun `a drill change during practice is refused, while paused it gets a new waiting block and is saved`() {
+        drills.stored = BlockSelection(side = KickSide.LEFT)
+        val controller = live()
+        assertEquals(KickSide.LEFT, controller.state.value.selection.side)
+        controller.startPractice()
+        settle()
+
+        val right = BlockSelection(side = KickSide.RIGHT)
+        controller.selectDrill(right)
+        assertEquals(KickSide.LEFT, controller.state.value.selection.side)
+        assertEquals("Pause practice to change the drill.", controller.state.value.statusDetail)
+        assertTrue(drills.saved.isEmpty())
+        assertEquals(1, backend.calls.count { it == "createBlock" })
+
+        controller.pausePractice()
+        settle()
+        controller.selectDrill(right)
+        settle()
+        assertEquals(listOf(right), drills.saved)
+        assertEquals(right, controller.state.value.selection)
+        assertEquals("block-2", controller.state.value.blockId)
+        assertEquals(PracticeState.NOT_STARTED, controller.state.value.practice)
+        assertEquals(1, backend.calls.count { it == "markReacquired" })
+
+        // OD-5: only Teep is judged automatically.
+        controller.selectDrill(right.copy(technique = KickTechnique.SIDE_KICK))
+        assertEquals(right, controller.state.value.selection)
+        assertEquals("Automatic analysis supports Teep only", controller.state.value.statusDetail)
+        assertEquals(listOf(right), drills.saved)
+
+        // Not LIVE: the block waits for the next LIVE.
+        controller.stopVideo()
+        settle()
+        val low = right.copy(targetHeight = com.vaylith.cleanrepsmobile.model.TargetHeight.LOW)
+        drills.saveFails = true
+        controller.selectDrill(low)
+        assertNull(controller.state.value.blockId)
+        assertEquals(low, controller.state.value.selection)
+        assertTrue(log.entries().any { "drill choice not saved" in it.redactedMessage })
+        assertEquals(2, backend.calls.count { it == "createBlock" })
+        controller.startVideo()
+        settle()
+        publisher.live()
+        settle()
+        assertEquals(3, backend.calls.count { it == "createBlock" })
+        assertEquals("block-3", controller.state.value.blockId)
+    }
+
+    @Test fun `Go live locks the orientation before the publisher starts and releases it when the video stops`() {
+        val controller = controller()
+        controller.startVideo()
+        // At the tap, before any server call and before the publisher reads the rotation.
+        assertEquals("lock", order.first())
+        assertTrue("$order", order.indexOf("lock") < order.indexOf("start:0"))
+        settle()
+        assertTrue(controller.state.value.orientationLocked)
+        publisher.live()
+        settle()
+        assertTrue(controller.state.value.orientationLocked)
+        publisher.listener.onPublisherStatus(PublisherStatus.RECONNECTING, "Publisher disconnected; retrying.")
+        assertTrue(controller.state.value.orientationLocked)
+        publisher.live()
+        controller.stopVideo()
+        settle()
+        assertFalse(controller.state.value.orientationLocked)
+
+        // ERROR releases it.
+        controller.startVideo()
+        settle()
+        publisher.listener.onPublisherStatus(PublisherStatus.ERROR, "Video connection failed.")
+        assertFalse(controller.state.value.orientationLocked)
+
+        // A failed start releases it: a refused start, a blocked publisher and a failing server call.
+        publisher.startResult = PublisherResult.Failed("Video could not start.")
+        controller.startVideo()
+        settle()
+        assertFalse(controller.state.value.orientationLocked)
+        publisher.startResult = PublisherResult.Blocked("MEDIAMTX_SRT_HOST is not configured")
+        controller.startVideo()
+        settle()
+        assertFalse(controller.state.value.orientationLocked)
+        backend.failNext("attachCapture", apiFailure(DiagnosticStep.ATTACH_CAPTURE, FailureKind.Timeout))
+        controller.close()
+        val next = controller()
+        next.startVideo()
+        settle()
+        assertFalse(next.state.value.orientationLocked)
+
+        val locks = order.filter { it == "lock" || it == "unlock" }
+        assertEquals(List(locks.size / 2) { listOf("lock", "unlock") }.flatten(), locks)
+        assertEquals(10, locks.size)
+    }
+
+    @Test fun `a rotation between the tap and the stream start never streams a stale geometry (I8), watcher on time`() =
+        rotationBetweenTapAndStream(watcherDelivers = true)
+
+    @Test fun `a rotation between the tap and the stream start never streams a stale geometry (I8), watcher late`() =
+        rotationBetweenTapAndStream(watcherDelivers = false)
+
+    private fun rotationBetweenTapAndStream(watcherDelivers: Boolean) {
+        var rotation = 1
+        lateinit var coordinated: CoordinatedPublisher
+        val controller = controller(newPublisher = { listener ->
+            CoordinatedPublisher(listener, order) { rotation }.also { coordinated = it }
+        })
+        val landscape = CaptureGeometry.forDisplayRotation(1, 90).getOrThrow()
+        val portrait = CaptureGeometry.forDisplayRotation(0, 90).getOrThrow()
+        assertEquals(landscape, coordinated.preparedGeometry)
+
+        val session = backend.hold("createSession")
+        controller.startVideo()
+        // The phone turns after the tap and before the stream starts.
+        rotation = 0
+        if (watcherDelivers) coordinated.rotated(0)
+        session.complete(Unit)
+        settle()
+
+        assertEquals(listOf(portrait), coordinated.port.streamStarts)
+        assertEquals(emptyList<String>(), coordinated.port.violations)
+        assertEquals(portrait.label, controller.state.value.streamGeometry)
+        val lock = order.indexOf("lock")
+        val read = order.indexOf("readRotation:0")
+        val stream = order.indexOf("startStream:${portrait.label}")
+        assertTrue("$order", lock in 0 until read && read < stream)
+        val calls = coordinated.port.calls
+        assertEquals("prepareVideo(${portrait.rotationArg})", calls.subList(0, calls.indexOf("startStream")).last { it.startsWith("prepareVideo") })
+    }
+
+    @Test fun `Restart video stops, reports the old capture lost, attaches a new capture with a new epoch and starts again`() {
+        val controller = live()
+        controller.startPractice()
+        settle()
+        events.onLiveAnalysis(status(LiveAnalysisState.BLOCKED, LiveBlockedReason.WAITING_FOR_NEW_CAPTURE_EPOCH))
+        assertTrue(controller.state.value.restartOffered)
+        order.clear()
+
+        controller.restartVideo()
+        settle()
+        publisher.live()
+        settle()
+
+        val sequence = listOf("stop", "unlock", "lock", "lost:capture-1", "attachCapture:1", "start:1")
+        assertEquals(sequence, order.filter { it in sequence })
+        assertTrue("$order", order.indexOf("pausePractice") in 0 until order.indexOf("attachCapture:1"))
+        assertEquals(listOf(0L, 1L), backend.attachEpochs)
+        assertEquals(listOf(HealthCall("capture-1", "lost", "stopped", setOf("capture-1"))), lostCalls())
+        assertEquals("capture-2", controller.state.value.captureId)
+        assertEquals(CaptureReadiness.LIVE, controller.state.value.readiness)
+        assertTrue(controller.state.value.orientationLocked)
+        assertTrue(store.pending().isEmpty())
+        assertFalse(controller.state.value.requestInFlight)
+    }
+
+    @Test fun `Restart video is offered only for the three blocked reasons, while LIVE`() {
+        val controller = live()
+        val restartReasons = setOf(
+            LiveBlockedReason.WAITING_FOR_NEW_CAPTURE_EPOCH,
+            LiveBlockedReason.WORKER_RETRY_LIMIT,
+            LiveBlockedReason.AMBIGUOUS_ACTIVE_SESSIONS,
+        )
+        for (reason in LiveBlockedReason.entries) {
+            events.onLiveAnalysis(status(LiveAnalysisState.BLOCKED, reason))
+            assertEquals(reason.name, reason in restartReasons, controller.state.value.restartOffered)
+        }
+        events.onLiveAnalysis(status(LiveAnalysisState.BLOCKED, LiveBlockedReason.WAITING_FOR_NEW_CAPTURE_EPOCH, stale = true))
+        assertFalse(controller.state.value.restartOffered)
+        events.onLiveAnalysis(status(LiveAnalysisState.NO_PERSON))
+        assertFalse(controller.state.value.restartOffered)
+        events.onLiveAnalysis(null)
+        assertFalse(controller.state.value.restartOffered)
+        events.onLiveAnalysis(status(LiveAnalysisState.BLOCKED, LiveBlockedReason.WORKER_RETRY_LIMIT))
+        assertTrue(controller.state.value.restartOffered)
+        controller.stopVideo()
+        settle()
+        assertFalse(controller.state.value.restartOffered)
+    }
+
+    @Test fun `with one no_person status after Start and no further events, the tick gives exactly one LOST at +10 s`() {
+        val controller = live()
+        val armedAt = scheduler.currentTime
+        controller.startPractice()
+        assertTrue(controller.state.value.practiceActive)
+        events.onLiveAnalysis(status(LiveAnalysisState.NO_PERSON))
+
+        scheduler.advanceTimeBy(FeedbackPolicy.WALK_BACK_GRACE_MS)
+        assertTrue(signals.cues.none { it == FeedbackCue.Lost })
+        scheduler.runCurrent()
+        val lostAt = signals.cues.indices.filter { signals.cues[it] == FeedbackCue.Lost }.map { signals.cueTimes[it] }
+        assertEquals(listOf(armedAt + 10_000), lostAt)
+        // OD-4: the spoken hint comes with it.
+        assertTrue(FeedbackCue.Speak("Step into the frame") in signals.cues)
+
+        scheduler.advanceTimeBy(14_000)
+        scheduler.runCurrent()
+        assertEquals(1, signals.cues.count { it == FeedbackCue.Lost })
+    }
+
+    @Test fun `the FeedbackPolicy tick runs only while the video is LIVE`() {
+        val controller = live()
+        val reads = clockReads
+        scheduler.advanceTimeBy(1_000)
+        scheduler.runCurrent()
+        // One clock read per tick: 4 ticks in 1 s of LIVE.
+        assertEquals(4, clockReads - reads)
+        controller.stopVideo()
+        settle()
+        val stopped = clockReads
+        scheduler.advanceTimeBy(10_000)
+        scheduler.runCurrent()
+        assertEquals(stopped, clockReads)
+    }
+
+    @Test fun `feedback wiring - unjudgeable is silent with a banner, tracking after Start gives one READY`() {
+        val controller = live()
+        controller.startPractice()
+        events.onVerdict(verdict(VerdictClass.UNJUDGEABLE, "evidence_failed"))
+        assertTrue(signals.cues.isEmpty())
+        assertEquals(FeedbackPolicy.UNJUDGED_BANNER, controller.state.value.feedbackBanner)
+        assertEquals("Couldn't judge that one - keep head and feet in view", controller.state.value.feedbackBanner)
+
+        events.onLiveAnalysis(status(LiveAnalysisState.TRACKING))
+        events.onLiveAnalysis(status(LiveAnalysisState.TRACKING))
+        assertEquals(listOf<FeedbackCue>(FeedbackCue.Ready), signals.cues)
+
+        events.onVerdict(verdict(VerdictClass.ACCEPTED, "practice_cycle_complete"))
+        assertEquals(listOf(FeedbackCue.Ready, FeedbackCue.Accept), signals.cues)
+        assertNull(controller.state.value.feedbackBanner)
+
+        // Speak verdicts uses the phrase mapping.
+        controller.toggleSpeakVerdicts()
+        events.onVerdict(verdict(VerdictClass.REJECTED, "practice_no_extension"))
+        assertEquals(listOf(FeedbackCue.Ready, FeedbackCue.Accept, FeedbackCue.Reject, FeedbackCue.Speak("No extension")), signals.cues)
+
+        // OD-4: voice hints are on by default, with a toggle.
+        assertTrue(AppState().voiceHints)
+        assertTrue(controller.state.value.voiceHints)
+        controller.toggleVoiceHints()
+        assertFalse(controller.state.value.voiceHints)
+    }
+
+    @Test fun `session counts and the LIVE pill are exposed`() {
+        val controller = live()
+        assertEquals("LIVE - ${CaptureGeometry.forDisplayRotation(0, 90).getOrThrow().label}", controller.state.value.livePill)
+        events.onSessionCounts(SessionCounts(accepted = 3, rejected = 1, evidenceFailed = 2))
+        assertEquals("This session 3 accepted - 1 rejected", controller.state.value.sessionCountsText)
+        controller.stopVideo()
+        settle()
+        assertNull(controller.state.value.livePill)
+    }
+
+    @Test fun `a settings change or a recreated Activity never sends a capture's lost twice`() {
+        val first = live()
+        backend.failNext("lost", apiFailure(DiagnosticStep.HEALTH, FailureKind.Unreachable))
+        first.onLeftScreen()
+        first.close()
+        // The next controller of the same process and server finds the capture pending and joins the delivery.
+        val nextBackend = FakeBackend()
+        val next = controller(backend = nextBackend)
+        next.startVideo()
+        settle()
+
+        // One delivery: the first attempt failed and its own retry arrived.
+        assertEquals(2, lostCalls().size)
+        assertTrue(nextBackend.health.none { it.status == "lost" })
+        assertTrue(store.pending().isEmpty())
+        // The new capture was attached only after that delivery.
+        assertEquals("capture-1", next.state.value.captureId)
+        assertTrue("$order", order.lastIndexOf("lost:capture-1") < order.lastIndexOf("attachCapture:0"))
+    }
+
+    @Test fun `another server's pending lost is neither sent nor holds up a new capture`() {
+        store.add("capture-other", PendingLost(HealthDetail.STOPPED, OTHER_SERVER))
+        store.add("capture-unkeyed", PendingLost(HealthDetail.STOPPED, SharedPreferencesPendingLostStore.ANY_SERVER))
+        val controller = controller()
+        controller.startVideo()
+        settle()
+        // The unkeyed entry may belong to any server, so this one takes it; the other server's stays.
+        assertEquals(listOf("capture-unkeyed"), lostCalls().map { it.captureId })
+        assertEquals("capture-1", controller.state.value.captureId)
+        assertEquals(setOf("capture-other"), store.pending().keys)
+    }
+
+    private fun verdict(verdictClass: VerdictClass, reason: String) =
+        MobileVerdictEvent("kick-$reason", 1, "adj-$reason-${verdictClass.name}", 1, reason, verdictClass)
 
     private data class HealthCall(val captureId: String, val status: String, val detail: String, val pendingAtCall: Set<String>)
 
@@ -537,21 +933,22 @@ class SessionControllerTest {
         val clientInfoBodies = mutableListOf<ByteArray>()
         val clientInfoCaptures = mutableListOf<String>()
         var clientInfoAnswer = ClientInfoResult.STORED
+        val attachEpochs = mutableListOf<Long>()
         private val failures = mutableMapOf<String, ArrayDeque<Exception>>()
+        private val holds = mutableMapOf<String, CompletableDeferred<Unit>>()
         private var captures = 0
-        var suspendAttach = false
-        private var attachGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
         fun failNext(method: String, error: Exception) {
             failures.getOrPut(method) { ArrayDeque() }.addLast(error)
         }
 
-        fun releaseAttach() {
-            attachGate?.complete(Unit)
-        }
+        /** The next call of [method] waits until the returned gate is completed. */
+        fun hold(method: String): CompletableDeferred<Unit> = CompletableDeferred<Unit>().also { holds[method] = it }
 
-        private fun call(method: String) {
+        private suspend fun call(method: String, recorded: String = method) {
             calls += method
+            order += recorded
+            holds.remove(method)?.await()
             failures[method]?.removeFirstOrNull()?.let { throw it }
         }
 
@@ -571,15 +968,14 @@ class SessionControllerTest {
 
         override suspend fun attachCapture(sessionId: String, sourceId: String, epoch: SourceEpoch): String {
             assertEquals(SOURCE, sourceId)
-            call("attachCapture")
-            val id = "capture-${++captures}"
-            if (suspendAttach) kotlinx.coroutines.CompletableDeferred<Unit>().also { attachGate = it }.await()
-            return id
+            attachEpochs += epoch.value
+            call("attachCapture", "attachCapture:${epoch.value}")
+            return "capture-${++captures}"
         }
 
         override suspend fun reportSourceHealth(captureId: String, status: String, detail: String) {
             health += HealthCall(captureId, status, detail, store.pending().keys)
-            call(if (status == "lost") "lost" else "health")
+            if (status == "lost") call("lost", "lost:$captureId") else call("health")
         }
 
         override suspend fun logManualAttempt(
@@ -603,13 +999,14 @@ class SessionControllerTest {
     }
 
     /** Behaves like MediaMtxSrtPublisher at its listener: start reports CONNECTING, stop reports STOPPED. */
-    private class FakePublisher(val listener: PublisherListener) : CanonicalSourcePublisher {
+    private class FakePublisher(val listener: PublisherListener, private val order: MutableList<String>) : CanonicalSourcePublisher {
         val calls = mutableListOf<String>()
         var startResult: PublisherResult = PublisherResult.Connecting(SOURCE)
         var startFailure: Exception? = null
 
         override suspend fun start(epoch: SourceEpoch): PublisherResult {
             calls += "start:${epoch.value}"
+            order += "start:${epoch.value}"
             startFailure?.let { throw it }
             if (startResult is PublisherResult.Connecting) {
                 listener.onPublisherStatus(PublisherStatus.CONNECTING, "Connecting one SRT source for epoch ${epoch.displayId}...")
@@ -619,6 +1016,7 @@ class SessionControllerTest {
 
         override suspend fun stop() {
             calls += "stop"
+            order += "stop"
             listener.onPublisherStatus(PublisherStatus.STOPPED, "Capture stopped. Local safety spool is retained in app cache.")
         }
 
@@ -638,10 +1036,83 @@ class SessionControllerTest {
         }
     }
 
+    /**
+     * The publisher's Go-live path over the real PreviewCoordinator and M2b's
+     * FakeEncoderPort, in MediaMtxSrtPublisher.start's order: the coordinator
+     * reads the display rotation and passes streamRequested (I8), then the stream
+     * starts. [displayRotation] is what the display reports at the moment of a read.
+     */
+    private class CoordinatedPublisher(
+        private val listener: PublisherListener,
+        private val order: MutableList<String>,
+        private val displayRotation: () -> Int,
+    ) : CanonicalSourcePublisher {
+        val port = FakeEncoderPort()
+        private val coordinator = PreviewCoordinator(port, listener, null, 90, { _, _ -> }) {
+            displayRotation().also { order += "readRotation:$it" }
+        }
+
+        init {
+            coordinator.displayRotationChanged(displayRotation())
+            coordinator.surfaceAvailable(FakeSurface(1), 0, 0)
+            coordinator.surfaceChanged(1080, 2400)
+        }
+
+        /** What DisplayRotationWatcher reports when the display turns. */
+        fun rotated(rotation: Int) = coordinator.displayRotationChanged(rotation)
+
+        override suspend fun start(epoch: SourceEpoch): PublisherResult {
+            order += "start:${epoch.value}"
+            return when (val gate = coordinator.goLive()) {
+                is StreamGate.NotReady -> {
+                    listener.onPublisherStatus(PublisherStatus.ERROR, "Video could not start: ${gate.reason}")
+                    PublisherResult.Failed(gate.reason)
+                }
+                is StreamGate.Ready -> {
+                    listener.onPublisherStatus(PublisherStatus.CONNECTING, "Connecting one SRT source.")
+                    port.startStream()
+                    order += "startStream:${port.streamStarts.last().label}"
+                    coordinator.streamStarted()
+                    PublisherResult.Connecting(SOURCE)
+                }
+            }
+        }
+
+        override suspend fun stop() {
+            port.stopStream()
+            coordinator.streamStopped()
+            listener.onPublisherStatus(PublisherStatus.STOPPED, "Capture stopped.")
+        }
+
+        override val isAvailable = true
+        override fun attachPreview(view: SurfaceView) = Unit
+        override fun releasePreview() = Unit
+        override val preparedGeometry: CaptureGeometry? get() = coordinator.preparedGeometry
+        override val sensorOrientationDeg: Int? get() = coordinator.sensorOrientationDeg
+        override fun reopenCamera() = coordinator.reopenCamera()
+        override fun frameCheck(callback: (Bitmap?, Int, Int) -> Unit) = callback(null, 0, 0)
+        override fun release() = coordinator.release(port)
+    }
+
+    private class MemoryDrills(var stored: BlockSelection = BlockSelection()) : DrillSelectionStore {
+        val saved = mutableListOf<BlockSelection>()
+        var saveFails = false
+
+        override fun load(): BlockSelection = stored
+
+        override fun save(selection: BlockSelection) {
+            check(!saveFails) { "Could not save the drill on this phone" }
+            saved += selection
+            stored = selection
+        }
+    }
+
     private class FakeEvents : ChallengeEvents {
         var sessionId: String? = null
         var stops = 0
         lateinit var onVerdict: (MobileVerdictEvent) -> Unit
+        lateinit var onLiveAnalysis: (LiveAnalysisStatus?) -> Unit
+        lateinit var onSessionCounts: (SessionCounts) -> Unit
 
         override fun start(
             scope: CoroutineScope,
@@ -656,6 +1127,8 @@ class SessionControllerTest {
         ) {
             this.sessionId = sessionId
             this.onVerdict = onVerdict
+            this.onLiveAnalysis = onLiveAnalysis
+            this.onSessionCounts = onSessionCounts
         }
 
         override fun stop() {
@@ -663,11 +1136,14 @@ class SessionControllerTest {
         }
     }
 
-    private class RecordingSignals : AthleteSignals {
+    private class RecordingSignals(private val now: () -> Long) : AthleteSignals {
         val cues = mutableListOf<FeedbackCue>()
+        /** The virtual time of each entry of [cues]. */
+        val cueTimes = mutableListOf<Long>()
         val spoken = mutableListOf<String>()
         override fun cue(cue: FeedbackCue) {
             cues += cue
+            cueTimes += now()
         }
         override fun speak(text: String) {
             spoken += text
@@ -723,6 +1199,11 @@ class SessionControllerTest {
 
     private companion object {
         const val SOURCE = "million-kicks-camera"
+        /** Server keys, as lostServerKey gives them; synthetic values. */
+        const val SERVER = "0123456789abcdef"
+        const val OTHER_SERVER = "fedcba9876543210"
+        /** Longer than every backoff and retry (1 s + 4 s), a multiple of the tick period. */
+        const val SETTLE_MS = 30_000L
         /** Exception text a failure might carry; synthetic RFC 2606/5737 values only. */
         const val MARKER = "MARKER-6A api.example.test/192.0.2.10:8443 key fixture-key-7"
         const val CAMERA_TEXT = "Camera problem during camera open — close other camera apps and try again"
