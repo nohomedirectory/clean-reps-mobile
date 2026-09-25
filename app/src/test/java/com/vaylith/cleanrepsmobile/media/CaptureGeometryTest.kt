@@ -37,24 +37,48 @@ class CaptureGeometryTest {
         }
     }
 
-    @Test fun `sensor 90 rotation argument equals RootEncoder CameraHelper getCameraOrientation`() {
+    @Test fun `rotation argument equals RootEncoder CameraHelper getCameraOrientation for both sensors`() {
         // RootEncoder 2.7.0 CameraHelper.getCameraOrientation(context), read from its bytecode.
+        // It depends only on the display rotation.
         val rootEncoderGetCameraOrientation = mapOf(0 to 90, 1 to 0, 2 to 270, 3 to 180)
-        assertEquals(rootEncoderGetCameraOrientation, (0..3).associateWith { geometry(it, 90).rotationArg })
+        for (sensorOrientation in listOf(90, 270)) {
+            assertEquals(
+                "sensor $sensorOrientation",
+                rootEncoderGetCameraOrientation,
+                (0..3).associateWith { geometry(it, sensorOrientation).rotationArg },
+            )
+        }
     }
 
-    @Test fun `sensor 270 adds 180 degrees and is flagged unverified`() {
+    // Deliberate change (clean-reps-pcp-epic-k4r.66): the first version expected sensor 270 to add
+    // 180 degrees. RootEncoder 2.7.0's CameraRender.draw() samples the camera texture through
+    // SurfaceTexture.getTransformMatrix, and Camera2 already bakes the sensor orientation into that
+    // matrix. CameraHelper.getCameraOrientation reads only the display rotation, and within the
+    // library SENSOR_ORIENTATION is read only by Camera2ApiManager.enableFaceDetection. So a
+    // 270-degree sensor needs the same rotation argument as a 90-degree one; adding 180 would send
+    // the video upside down. Hardware has not confirmed this, so the result stays flagged.
+    @Test fun `sensor 270 uses the sensor 90 mapping and is flagged unverified`() {
         val expected = mapOf(
-            0 to Expected(270, 720, 1280, PORTRAIT, "portrait 720x1280"),
-            1 to Expected(180, 1280, 720, LANDSCAPE, "landscape 1280x720"),
-            2 to Expected(90, 720, 1280, PORTRAIT, "portrait 720x1280"),
-            3 to Expected(0, 1280, 720, LANDSCAPE, "landscape 1280x720"),
+            0 to Expected(90, 720, 1280, PORTRAIT, "portrait 720x1280"),
+            1 to Expected(0, 1280, 720, LANDSCAPE, "landscape 1280x720"),
+            2 to Expected(270, 720, 1280, PORTRAIT, "portrait 720x1280"),
+            3 to Expected(180, 1280, 720, LANDSCAPE, "landscape 1280x720"),
         )
         expected.forEach { (displayRotation, want) ->
             val geometry = geometry(displayRotation, 270)
             assertEquals("display rotation $displayRotation", want, geometry.observed())
             assertTrue(geometry.sensorCompensationUnverified)
             assertEquals(270, geometry.sensorOrientationDeg)
+        }
+    }
+
+    @Test fun `sensor 270 and sensor 90 differ only in the unverified flag`() {
+        for (displayRotation in 0..3) {
+            val sensor90 = geometry(displayRotation, 90)
+            val sensor270 = geometry(displayRotation, 270)
+            assertEquals("display rotation $displayRotation", sensor90.observed(), sensor270.observed())
+            assertFalse(sensor90.sensorCompensationUnverified)
+            assertTrue(sensor270.sensorCompensationUnverified)
         }
     }
 
