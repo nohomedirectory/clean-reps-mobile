@@ -135,7 +135,7 @@ class SessionController(
         val snapshot = current
         if (snapshot.requestInFlight || snapshot.videoRunning || refusedForCamera(snapshot)) return
         lockOrientation(true)
-        update { copy(requestInFlight = true, banner = null) }
+        update { copy(requestInFlight = true, banner = null, stepError = null) }
         scope.launch {
             try {
                 goLive()
@@ -155,7 +155,7 @@ class SessionController(
         val snapshot = current
         if (snapshot.requestInFlight || refusedForCamera(snapshot)) return
         diagnostics.info(DiagnosticStep.PUBLISHER_START, "restart video")
-        update { copy(requestInFlight = true, banner = null) }
+        update { copy(requestInFlight = true, banner = null, stepError = null) }
         scope.launch {
             try {
                 if (current.videoRunning) {
@@ -172,6 +172,7 @@ class SessionController(
 
     fun stopVideo() {
         if (!current.videoRunning || current.requestInFlight) return
+        update { copy(stepError = null) }
         // Camera shutdown must never wait for an unavailable API.
         scope.launch {
             publisher.stop()
@@ -208,7 +209,7 @@ class SessionController(
         val session = snapshot.sessionId ?: return
         val capture = snapshot.captureId
         if (snapshot.readiness != CaptureReadiness.LIVE || capture == null || snapshot.practiceActive || snapshot.requestInFlight) return
-        update { copy(requestInFlight = true) }
+        update { copy(requestInFlight = true, stepError = null) }
         scope.launch {
             var step = DiagnosticStep.CREATE_BLOCK
             try {
@@ -245,7 +246,7 @@ class SessionController(
 
     fun pausePractice() {
         if (!current.practiceActive || current.requestInFlight) return
-        update { copy(requestInFlight = true) }
+        update { copy(requestInFlight = true, stepError = null) }
         scope.launch {
             try {
                 pause()
@@ -668,7 +669,8 @@ class SessionController(
         pending.forEach { (captureId, lost) -> lostDelivery(captureId, lost.detail).await()?.let { failure = it } }
         if (ownPendingLost().isEmpty()) return true
         val reason = failure?.let { ownerMessage(DiagnosticStep.HEALTH, it) }
-        update { copy(statusDetail = withAdvice(reason ?: "The last video is still open on the server.", "No new video starts until it is reported as ended; try again.")) }
+        val message = withAdvice(reason ?: "The last video is still open on the server.", "No new video starts until it is reported as ended; try again.")
+        update { copy(statusDetail = message, stepError = message) }
         return false
     }
 
@@ -726,10 +728,14 @@ class SessionController(
         }
     }
 
-    /** Records [error] under [step] and shows the step's owner message; exception text reaches only the log. */
+    /**
+     * Records [error] under [step] and shows the step's owner message, also as the error banner
+     * ([AppState.stepError]); exception text reaches only the log.
+     */
     private fun showFailure(step: DiagnosticStep, action: String, error: Exception, advice: String? = null) {
         recordFailure(step, "$action failed", error)
-        update { copy(statusDetail = withAdvice(ownerMessage(step, error), advice)) }
+        val message = withAdvice(ownerMessage(step, error), advice)
+        update { copy(statusDetail = message, stepError = message) }
     }
 
     /** ChallengeApi records its own failures under their step; anything else is recorded here, with its cause. */
@@ -846,6 +852,11 @@ data class AppState(
     val banner: String? = null,
     /** FeedbackPolicy's banner for the last verdict, e.g. an unjudgeable one. */
     val feedbackBanner: String? = null,
+    /**
+     * The owner message of the last failed step (M3a, naming the step), shown as the error
+     * banner until the next screen action (Go live, Restart video, Start practice, Pause, Stop video) starts.
+     */
+    val stepError: String? = null,
     /** OD-7: the screen orientation is locked, from the Go-live tap until the video stops. */
     val orientationLocked: Boolean = false,
     /** The label of the geometry the stream was started with, e.g. "landscape 1280x720". */

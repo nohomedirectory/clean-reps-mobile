@@ -476,6 +476,37 @@ class SessionControllerTest {
         assertEquals(DiagnosticStep.CREATE_BLOCK, log.entries().last { it.outcome == DiagnosticOutcome.FAIL }.step)
     }
 
+    @Test fun `a step failure is also the error banner, without its cause, until the next action starts`() {
+        backend.failNext("createSession", apiFailure(DiagnosticStep.CREATE_SESSION, FailureKind.Timeout))
+        val controller = controller()
+        assertNull(controller.state.value.stepError)
+        controller.startVideo()
+        settle()
+        val createSession = "Couldn't reach Clean Reps for create session (timeout) — is Tailscale on?"
+        assertEquals(createSession, controller.state.value.stepError)
+        assertEquals(createSession, controller.state.value.statusDetail)
+
+        // Go live again: cleared at the tap, and the video comes up.
+        controller.startVideo()
+        assertNull(controller.state.value.stepError)
+        settle()
+        publisher.live()
+        settle()
+        assertNull(controller.state.value.stepError)
+
+        // A failure outside the API (planted cause text) at Start practice: the banner names the step only.
+        backend.failNext("markReacquired", SocketTimeoutException(MARKER))
+        controller.startPractice()
+        settle()
+        val stepError = controller.state.value.stepError
+        assertEquals("Couldn't reach Clean Reps for back-in-frame marker (timeout) — is Tailscale on? Video is still available.", stepError)
+        assertFalse("MARKER" in stepError!!)
+
+        // Stop video is an action too.
+        controller.stopVideo()
+        assertNull(controller.state.value.stepError)
+    }
+
     @Test fun `verdict sounds come from the verdict class - pending and unjudgeable are silent`() {
         live()
         listOf(VerdictClass.ACCEPTED, VerdictClass.PENDING, VerdictClass.REJECTED, VerdictClass.UNJUDGEABLE).forEachIndexed { index, verdictClass ->

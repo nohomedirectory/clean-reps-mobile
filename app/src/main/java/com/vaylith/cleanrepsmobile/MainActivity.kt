@@ -11,27 +11,11 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -74,7 +58,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var pendingLost: PendingLostStore
     private lateinit var drills: DrillSelectionStore
     private var settings by mutableStateOf(ConnectionSettings())
-    private var showSettings by mutableStateOf(false)
     /** One per connection settings; replaced (and the old one closed) when they change. */
     private lateinit var activeController: MutableState<SessionController>
     private val requiredPermissions = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
@@ -107,17 +90,16 @@ class MainActivity : ComponentActivity() {
                 CameraScreen(
                     controller = controller,
                     publisher = controller.publisher,
-                    configured = settings.validationError() == null,
+                    settings = settings,
                     permission = hasPermissions(),
                     onRequestPermission = { requestPermissions.launch(requiredPermissions) },
-                    onOpenConnectionSettings = { showSettings = true },
+                    // Throws when the settings cannot be stored; the setup sheet then says so and keeps the draft.
+                    onSaveConnection = { value ->
+                        settingsStore.save(value)
+                        applySettings(value)
+                    },
                     onAudioTest = feedback::audioTest,
                 )
-                if (showSettings) ConnectionDialog(settings, onDismiss = { showSettings = false }, onSave = { value ->
-                    settingsStore.save(value)
-                    applySettings(value)
-                    showSettings = false
-                })
             }
         }
     }
@@ -184,24 +166,4 @@ class MainActivity : ComponentActivity() {
         feedback.close()
         super.onDestroy()
     }
-}
-
-@Composable private fun ConnectionDialog(initial: ConnectionSettings, onDismiss: () -> Unit, onSave: (ConnectionSettings) -> Unit) {
-    var draft by remember { mutableStateOf(initial) }
-    var error by remember { mutableStateOf<String?>(null) }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("Private connection") }, text = {
-        Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Use the existing server settings. Tailscale must be connected. These settings stay on this phone.")
-            OutlinedTextField(value = draft.apiBaseUrl, onValueChange = { draft = draft.copy(apiBaseUrl = it.trim()) }, label = { Text("Clean Reps address") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
-            OutlinedTextField(value = draft.srtHost, onValueChange = { draft = draft.copy(srtHost = it.trim()) }, label = { Text("Video host and port") }, singleLine = true)
-            OutlinedTextField(value = draft.srtPassphrase, onValueChange = { draft = draft.copy(srtPassphrase = it) }, label = { Text("Video passphrase") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
-            OutlinedTextField(value = draft.publishPassword, onValueChange = { draft = draft.copy(publishPassword = it) }, label = { Text("Publish password") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        }
-    }, confirmButton = {
-        TextButton(onClick = {
-            error = draft.validationError()
-            if (error == null) runCatching { onSave(draft) }.onFailure { error = "Could not save settings on this phone." }
-        }) { Text("Save connection") }
-    }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }

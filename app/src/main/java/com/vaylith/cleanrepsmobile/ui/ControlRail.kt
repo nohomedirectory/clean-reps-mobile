@@ -2,6 +2,7 @@ package com.vaylith.cleanrepsmobile.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,7 +15,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -22,9 +26,15 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -54,10 +64,22 @@ fun PrimaryAction.command(): RailCommand = when (this) {
     PrimaryAction.RESTART_VIDEO -> RailCommand.RESTART_VIDEO
 }
 
+/** The entries of the rail's overflow menu; each maps to one controller or host call. */
+enum class OverflowAction(val label: String) {
+    AUDIO_TEST("Audio test"),
+    VOICE_HINTS("Voice hints"),
+    SPEAK_VERDICTS("Speak verdicts"),
+    MANUAL_MARKER("Save manual review marker"),
+}
+
+/** An overflow entry; [checked] is the on/off state of a toggle and null for an action. */
+data class OverflowItem(val action: OverflowAction, val checked: Boolean?)
+
 /**
  * Everything the control rail shows, derived purely from the controller state: the one primary
- * button (M3c's [PrimaryActionState]), the line under it, Stop video while the video runs, and
- * the connection-settings gear, which is disabled while live.
+ * button (M3c's [PrimaryActionState]), the line under it, Stop video while the video runs, the
+ * connection-settings gear, which is disabled while live, the drill chip, which is disabled while
+ * practising, and the overflow menu.
  */
 data class ControlRailModel(
     val primary: PrimaryActionState,
@@ -69,6 +91,10 @@ data class ControlRailModel(
     val stopVideoShown: Boolean,
     val stopVideoEnabled: Boolean,
     val settingsEnabled: Boolean,
+    /** "Teep - Right - Hanging bag"; opens the drill part of the setup sheet. */
+    val drillLabel: String,
+    val drillEnabled: Boolean,
+    val overflow: List<OverflowItem>,
 ) {
     companion object {
         fun from(state: AppState, configured: Boolean, permission: Boolean): ControlRailModel {
@@ -91,8 +117,19 @@ data class ControlRailModel(
                 // Stop video also ends a stuck Connecting or Reconnecting video.
                 stopVideoShown = state.videoRunning,
                 stopVideoEnabled = state.videoRunning && !state.requestInFlight,
-                settingsEnabled = !state.videoRunning && !state.requestInFlight && !state.practiceActive,
+                settingsEnabled = SetupRules.connectionEditable(state),
+                drillLabel = SetupRules.drillLabel(state.selection),
+                drillEnabled = SetupRules.drillEditable(state),
+                overflow = overflow(state),
             )
+        }
+
+        /** OD-4 toggles show their state; the manual review marker is offered only while practice is active. */
+        fun overflow(state: AppState): List<OverflowItem> = buildList {
+            add(OverflowItem(OverflowAction.AUDIO_TEST, checked = null))
+            add(OverflowItem(OverflowAction.VOICE_HINTS, checked = state.voiceHints))
+            add(OverflowItem(OverflowAction.SPEAK_VERDICTS, checked = state.debugSpeakVerdicts))
+            if (state.practiceActive) add(OverflowItem(OverflowAction.MANUAL_MARKER, checked = null))
         }
 
         /** A disabled button never appears without its reason: the old screen ignored taps silently. */
@@ -160,8 +197,8 @@ private val RailScrim = Color.Black.copy(alpha = 0.55f)
 /**
  * The controls over the preview on a translucent scrim, along the edge nearest the thumb: a
  * column on the right in landscape, a band along the bottom in portrait. The caller places it
- * inside the `safeDrawing` insets. [onMore] opens the interim panel that keeps the drill, audio
- * and manual-marker controls reachable until M7b's sheets and overflow menu replace it.
+ * inside the `safeDrawing` insets. Stop video sits above the reason and hint lines, so it stays
+ * in view however far they wrap.
  */
 @Composable
 fun ControlRail(
@@ -170,12 +207,13 @@ fun ControlRail(
     onCommand: (RailCommand) -> Unit,
     onStopVideo: () -> Unit,
     onSettings: () -> Unit,
-    onMore: () -> Unit,
+    onDrill: () -> Unit,
+    onOverflow: (OverflowAction) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scrim = modifier.background(RailScrim, RoundedCornerShape(20.dp)).padding(RailText.PADDING_DP.dp)
     if (landscape) {
-        // Scrolls, so a wrapped reason, the hint, Restart video and Stop video never overflow a short landscape window.
+        // Scrolls, so a wrapped reason, the hint and Restart video never overflow a short landscape window.
         Column(
             scrim.width(RailText.LANDSCAPE_WIDTH_DP.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -183,22 +221,54 @@ fun ControlRail(
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 SettingsButton(model.settingsEnabled, onSettings)
-                MoreButton(onMore)
+                OverflowMenu(model.overflow, onOverflow)
             }
+            DrillChip(model, onDrill, Modifier.fillMaxWidth())
             PrimaryButton(model, onCommand, Modifier.fillMaxWidth())
-            RailLines(model, onCommand)
             if (model.stopVideoShown) StopVideoButton(model.stopVideoEnabled, onStopVideo, Modifier.fillMaxWidth())
+            RailLines(model, onCommand)
         }
     } else {
         Column(scrim.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            DrillChip(model, onDrill, Modifier.fillMaxWidth())
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SettingsButton(model.settingsEnabled, onSettings)
                 PrimaryButton(model, onCommand, Modifier.weight(1f))
-                MoreButton(onMore)
+                OverflowMenu(model.overflow, onOverflow)
             }
+            if (model.stopVideoShown) StopVideoButton(model.stopVideoEnabled, onStopVideo, Modifier.fillMaxWidth())
             // Below the button row, the lines get the band's full width rather than the button's share.
             RailLines(model, onCommand)
-            if (model.stopVideoShown) StopVideoButton(model.stopVideoEnabled, onStopVideo, Modifier.fillMaxWidth())
+        }
+    }
+}
+
+@Composable
+private fun DrillChip(model: ControlRailModel, onDrill: () -> Unit, modifier: Modifier) {
+    AssistChip(
+        onClick = onDrill,
+        enabled = model.drillEnabled,
+        label = { Text(model.drillLabel, style = MaterialTheme.typography.titleMedium) },
+        modifier = modifier.semantics { contentDescription = "Drill: ${model.drillLabel}" },
+    )
+}
+
+@Composable
+private fun OverflowMenu(items: List<OverflowItem>, onOverflow: (OverflowAction) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More controls") }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            items.forEach { item ->
+                DropdownMenuItem(
+                    text = { Text(item.action.label) },
+                    onClick = {
+                        expanded = false
+                        onOverflow(item.action)
+                    },
+                    trailingIcon = item.checked?.let { on -> { Text(if (on) "On" else "Off") } },
+                )
+            }
         }
     }
 }
@@ -240,9 +310,4 @@ private fun StopVideoButton(enabled: Boolean, onStopVideo: () -> Unit, modifier:
 @Composable
 private fun SettingsButton(enabled: Boolean, onSettings: () -> Unit) {
     IconButton(onClick = onSettings, enabled = enabled) { Icon(Icons.Filled.Settings, contentDescription = "Connection settings") }
-}
-
-@Composable
-private fun MoreButton(onMore: () -> Unit) {
-    IconButton(onClick = onMore) { Icon(Icons.Filled.MoreVert, contentDescription = "More controls") }
 }

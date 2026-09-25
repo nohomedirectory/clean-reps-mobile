@@ -77,6 +77,28 @@ class ControlRailTest {
         }
     }
 
+    @Test fun `the overflow menu holds audio test and the two toggles, and the review marker only while practising`() {
+        val idle = ControlRailModel.from(AppState(), configured = true, permission = true).overflow
+        assertEquals(
+            listOf(
+                OverflowItem(OverflowAction.AUDIO_TEST, checked = null),
+                // OD-4: voice hints are on by default; Speak verdicts is off.
+                OverflowItem(OverflowAction.VOICE_HINTS, checked = true),
+                OverflowItem(OverflowAction.SPEAK_VERDICTS, checked = false),
+            ),
+            idle,
+        )
+        val toggled = ControlRailModel.from(AppState(voiceHints = false, debugSpeakVerdicts = true), configured = true, permission = true).overflow
+        assertEquals(false, toggled.single { it.action == OverflowAction.VOICE_HINTS }.checked)
+        assertEquals(true, toggled.single { it.action == OverflowAction.SPEAK_VERDICTS }.checked)
+        for ((state, configured, permission) in table) {
+            val overflow = ControlRailModel.from(state, configured, permission).overflow
+            assertEquals("$state", state.practiceActive, overflow.any { it.action == OverflowAction.MANUAL_MARKER })
+            assertEquals("$state", 1, overflow.count { it.action == OverflowAction.AUDIO_TEST })
+        }
+        assertEquals(listOf("Audio test", "Voice hints", "Speak verdicts", "Save manual review marker"), OverflowAction.entries.map { it.label })
+    }
+
     @Test fun `the Restart video hint maps to the restart command`() {
         val state = AppState(readiness = CaptureReadiness.LIVE, captureId = "capture-1",
             liveAnalysis = LiveAnalysisStatus(LiveAnalysisState.BLOCKED, LiveBlockedReason.WORKER_RETRY_LIMIT))

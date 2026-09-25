@@ -2,7 +2,6 @@ package com.vaylith.cleanrepsmobile.ui
 
 import android.view.SurfaceView
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -19,12 +18,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -45,11 +40,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.vaylith.cleanrepsmobile.media.CanonicalSourcePublisher
 import com.vaylith.cleanrepsmobile.media.CaptureGeometry
-import com.vaylith.cleanrepsmobile.media.PreviewStatus
-import com.vaylith.cleanrepsmobile.model.KickSide
-import com.vaylith.cleanrepsmobile.model.KickTarget
-import com.vaylith.cleanrepsmobile.model.KickTechnique
-import com.vaylith.cleanrepsmobile.model.TargetHeight
+import com.vaylith.cleanrepsmobile.model.ConnectionSettings
 import com.vaylith.cleanrepsmobile.session.AppState
 import com.vaylith.cleanrepsmobile.session.SessionController
 
@@ -105,23 +96,45 @@ private fun Modifier.previewSize(window: Constraints): Modifier {
  *
  * The window orientation is locked from the Go-live tap until the video stops (OD-7, applied by
  * MainActivity), so the filled preview always matches the stream's orientation while live.
+ *
+ * Over the preview: the status pill with a one-line status caption and the banners (top left),
+ * the active cue (centre), the control rail, and the setup sheet when the gear, the drill chip or
+ * Set up connection opens it. [onSaveConnection] stores and applies new connection settings; it
+ * throws when they cannot be saved.
  */
 @Composable
 fun CameraScreen(
     controller: SessionController,
     publisher: CanonicalSourcePublisher,
-    configured: Boolean,
+    settings: ConnectionSettings,
     permission: Boolean,
     onRequestPermission: () -> Unit,
-    onOpenConnectionSettings: () -> Unit,
+    onSaveConnection: (ConnectionSettings) -> Unit,
     onAudioTest: () -> Unit,
 ) {
     val state by controller.state.collectAsState()
-    var moreOpen by rememberSaveable { mutableStateOf(false) }
-    val rail = ControlRailModel.from(state, configured, permission)
+    var sheet by rememberSaveable { mutableStateOf<SetupSection?>(null) }
+    val rail = ControlRailModel.from(state, configured = settings.validationError() == null, permission = permission)
+    // The rotation banner follows the geometry the running video was started with; OD-7 keeps the window locked to it.
+    val turned = rememberTurnedBanner(if (state.videoRunning) publisher.preparedGeometry else null)
+    val banners = Banners.select(state, turned)
+    val onBannerAction: (BannerAction) -> Unit = { action ->
+        when (action) {
+            BannerAction.REOPEN_CAMERA -> controller.reopenCamera()
+            BannerAction.STOP_VIDEO -> controller.stopVideo()
+        }
+    }
+    val onOverflow: (OverflowAction) -> Unit = { action ->
+        when (action) {
+            OverflowAction.AUDIO_TEST -> onAudioTest()
+            OverflowAction.VOICE_HINTS -> controller.toggleVoiceHints()
+            OverflowAction.SPEAK_VERDICTS -> controller.toggleSpeakVerdicts()
+            OverflowAction.MANUAL_MARKER -> controller.saveManualMarker()
+        }
+    }
     val onCommand: (RailCommand) -> Unit = { command ->
         when (command) {
-            RailCommand.OPEN_CONNECTION_SETTINGS -> onOpenConnectionSettings()
+            RailCommand.OPEN_CONNECTION_SETTINGS -> sheet = SetupSection.CONNECTION
             RailCommand.REQUEST_CAMERA_PERMISSION -> onRequestPermission()
             RailCommand.START_VIDEO -> controller.startVideo()
             RailCommand.START_PRACTICE -> controller.startPractice()
@@ -150,16 +163,16 @@ fun CameraScreen(
         }
         val content: @Composable (Modifier) -> Unit = { modifier ->
             Box(modifier) {
-                StatusOverlay(state, controller::reopenCamera, Modifier.align(Alignment.TopStart).widthIn(max = 420.dp))
+                StatusColumn(state, banners, onBannerAction, Modifier.align(Alignment.TopStart).widthIn(max = 460.dp))
                 state.activeCue?.let { cue ->
                     Text(cue.text, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
                         modifier = Modifier.align(Alignment.Center).background(Scrim, RoundedCornerShape(16.dp)).padding(16.dp))
                 }
-                if (moreOpen) InterimControls(state, controller, onAudioTest, Modifier.align(Alignment.BottomStart).widthIn(max = 480.dp))
             }
         }
         val railView: @Composable (Modifier) -> Unit = { modifier ->
-            ControlRail(rail, landscape, onCommand, controller::stopVideo, onOpenConnectionSettings, onMore = { moreOpen = !moreOpen }, modifier = modifier)
+            ControlRail(rail, landscape, onCommand, controller::stopVideo, onSettings = { sheet = SetupSection.CONNECTION },
+                onDrill = { sheet = SetupSection.DRILL }, onOverflow = onOverflow, modifier = modifier)
         }
         val safe = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(RailText.EDGE_DP.dp)
         if (landscape) {
@@ -173,58 +186,37 @@ fun CameraScreen(
                 railView(Modifier)
             }
         }
-    }
-}
-
-/** Video state and the banners, over the preview. M7b replaces this with the status pill and banners. */
-@Composable
-private fun StatusOverlay(state: AppState, onReopenCamera: () -> Unit, modifier: Modifier) {
-    Column(modifier.background(Scrim, RoundedCornerShape(16.dp)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(state.livePill ?: "Video: ${state.readiness.name.lowercase().replace('_', ' ')}", style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold)
-        Text(state.statusDetail, style = MaterialTheme.typography.bodyLarge)
-        val error = MaterialTheme.colorScheme.error
-        state.banner?.let { Text(it, color = error, style = MaterialTheme.typography.bodyLarge) }
-        state.previewBanner?.let { Text(it, color = error, style = MaterialTheme.typography.bodyLarge) }
-        if (state.preview is PreviewStatus.CameraError) OutlinedButton(onClick = onReopenCamera) { Text("Reopen camera") }
-        state.feedbackBanner?.let { Text(it, color = error, style = MaterialTheme.typography.bodyLarge) }
-        state.challengeOfficialAcceptedCount?.let { Text("Challenge total: $it accepted") }
-    }
-}
-
-/**
- * The drill, audio and manual-marker controls of the old form, behind More so the camera screen
- * stays clear. Interim: M7b's SetupSheet and overflow menu replace this panel.
- */
-@Composable
-private fun InterimControls(state: AppState, controller: SessionController, onAudioTest: () -> Unit, modifier: Modifier) {
-    val choosable = !state.practiceActive && !state.requestInFlight
-    Column(
-        modifier.background(Scrim, RoundedCornerShape(16.dp)).verticalScroll(rememberScrollState()).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Text("Private rehearsal - no official challenge credit", style = MaterialTheme.typography.titleMedium)
-        if (state.practiceActive) Text("Practice active. Pause to change the drill; video continues.")
-        ChoiceRow(KickTechnique.entries, state.selection.technique, choosable, { it.label }) { controller.selectDrill(state.selection.copy(technique = it)) }
-        ChoiceRow(KickSide.entries, state.selection.side, choosable, { it.label }) { controller.selectDrill(state.selection.copy(side = it)) }
-        ChoiceRow(KickTarget.entries, state.selection.targetContext, choosable, { it.label }) { controller.selectDrill(state.selection.copy(targetContext = it)) }
-        ChoiceRow(listOf<TargetHeight?>(null) + TargetHeight.entries, state.selection.targetHeight, choosable, { it?.label ?: "Any height" }) {
-            controller.selectDrill(state.selection.copy(targetHeight = it))
+        sheet?.let { section ->
+            SetupSheet(
+                section = section,
+                onSection = { sheet = it },
+                landscape = landscape,
+                state = state,
+                settings = settings,
+                onSelectDrill = controller::selectDrill,
+                onSaveConnection = onSaveConnection,
+                onAudioTest = onAudioTest,
+                onToggleVoiceHints = controller::toggleVoiceHints,
+                onToggleSpeakVerdicts = controller::toggleSpeakVerdicts,
+                onDismiss = { sheet = null },
+            )
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Button(onClick = onAudioTest) { Text("Audio test") }
-            FilterChip(selected = state.debugSpeakVerdicts, onClick = controller::toggleSpeakVerdicts, label = { Text("Speak verdicts") })
-            FilterChip(selected = state.voiceHints, onClick = controller::toggleVoiceHints, label = { Text("Voice hints") })
-        }
-        if (state.practiceActive) TextButton(onClick = controller::saveManualMarker) { Text("Save manual review marker") }
-        Text("Video live means this phone reached the video server. It does not confirm a public broadcast or automatic judging.",
-            style = MaterialTheme.typography.bodySmall)
     }
 }
 
+/** The status pill, the status caption, the challenge total and the banners, top left over the preview. */
 @Composable
-private fun <T> ChoiceRow(choices: List<T>, selected: T, enabled: Boolean, label: (T) -> String, onSelect: (T) -> Unit) {
-    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-        choices.forEach { value -> FilterChip(selected = value == selected, enabled = enabled, onClick = { onSelect(value) }, label = { Text(label(value)) }) }
+private fun StatusColumn(state: AppState, banners: List<Banner>, onBannerAction: (BannerAction) -> Unit, modifier: Modifier) {
+    Column(modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        StatusPill(state)
+        Banners.caption(state, banners)?.let { caption ->
+            Text(caption, style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.background(Scrim, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 6.dp))
+        }
+        state.challengeOfficialAcceptedCount?.let { total ->
+            Text("Challenge total: $total accepted", style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.background(Scrim, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 6.dp))
+        }
+        BannerStack(banners, onBannerAction)
     }
 }

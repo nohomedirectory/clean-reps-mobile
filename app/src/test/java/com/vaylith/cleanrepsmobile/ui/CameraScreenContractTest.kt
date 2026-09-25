@@ -140,6 +140,64 @@ class CameraScreenContractTest {
             cuts(code("Text(text, style = style, maxLines = 1, overflow = TextOverflow.Ellipsis)")))
     }
 
+    @Test fun `the setup sheet masks both credentials and edits the connection only while stopped`() {
+        val sheet = ui.getValue("SetupSheet.kt")
+        assertTrue(masksCredentials(sheet))
+        assertTrue("val editable = SetupRules.connectionEditable(state)" in sheet)
+        val fields = calls(sheet, "OutlinedTextField")
+        assertEquals(4, fields.size)
+        fields.forEach { assertTrue(it.toString(), "enabled = editable" in it) }
+        assertTrue(calls(sheet, "Button").any { args -> "enabled = editable" in args && args.any { it.startsWith("onClick =") && "onSave(draft)" in it } })
+        // The old dialog is gone from MainActivity; the sheet is its only home.
+        listOf("ConnectionDialog", "AlertDialog(", "OutlinedTextField(", "PasswordVisualTransformation").forEach { assertFalse(it, it in activity) }
+        // Planted: an unmasked secret field is caught.
+        assertFalse(masksCredentials(code("""
+            OutlinedTextField(value = draft.srtPassphrase, visualTransformation = PasswordVisualTransformation())
+            OutlinedTextField(value = draft.publishPassword, singleLine = true)
+        """)))
+        assertTrue(masksCredentials(code("""
+            OutlinedTextField(value = draft.srtPassphrase, visualTransformation = PasswordVisualTransformation())
+            OutlinedTextField(value = draft.publishPassword, visualTransformation = PasswordVisualTransformation())
+        """)))
+        assertFalse(masksCredentials(code("OutlinedTextField(value = draft.publishPassword, visualTransformation = VisualTransformation.None)")))
+    }
+
+    @Test fun `technique chips are enabled only by the picker model and a tap goes through withTechnique`() {
+        val sheet = ui.getValue("SetupSheet.kt")
+        val techniqueChip = calls(sheet, "FilterChip").single { args -> args.any { "option.technique" in it } }
+        assertTrue(techniqueChip.toString(), "enabled = option.enabled" in techniqueChip)
+        assertTrue(techniqueChip.toString(), techniqueChip.any { it.startsWith("onClick =") && "SetupRules.withTechnique(selection, option.technique)" in it })
+        assertTrue(Regex("""SetupRules\.techniques\(state\)\.forEach""").containsMatchIn(sheet))
+    }
+
+    @Test fun `the screen maps every overflow and banner action to the same controller calls as before`() {
+        listOf(
+            "OverflowAction.AUDIO_TEST -> onAudioTest()",
+            "OverflowAction.VOICE_HINTS -> controller.toggleVoiceHints()",
+            "OverflowAction.SPEAK_VERDICTS -> controller.toggleSpeakVerdicts()",
+            "OverflowAction.MANUAL_MARKER -> controller.saveManualMarker()",
+            "BannerAction.REOPEN_CAMERA -> controller.reopenCamera()",
+            "BannerAction.STOP_VIDEO -> controller.stopVideo()",
+            "RailCommand.OPEN_CONNECTION_SETTINGS -> sheet = SetupSection.CONNECTION",
+            "onSettings = { sheet = SetupSection.CONNECTION }",
+            "onDrill = { sheet = SetupSection.DRILL }",
+            "onSelectDrill = controller::selectDrill",
+        ).forEach { assertTrue(it, it in screen) }
+        // The interim M7a panels are gone.
+        listOf("InterimControls", "StatusOverlay", "moreOpen", "FilterChip(").forEach { assertFalse(it, it in screen) }
+        // The drill picker's controls live in the sheet only.
+        assertFalse("FilterChip(" in ui.getValue("ControlRail.kt"))
+    }
+
+    @Test fun `the rotation banner comes from OrientationEventListener through the quantizer, only while the video runs`() {
+        val banners = ui.getValue("Banners.kt")
+        val listener = banners.substring(banners.indexOf("object : OrientationEventListener("))
+        assertTrue("banner = watch.reading(orientation, SystemClock.elapsedRealtime())" in listener.substringBefore("onDispose"))
+        assertTrue("PhysicalOrientation(Quadrant.forDisplayRotation(geometry.displayRotation))" in banners)
+        assertTrue("rememberTurnedBanner(if (state.videoRunning) publisher.preparedGeometry else null)" in screen)
+        assertTrue("val banners = Banners.select(state, turned)" in screen)
+    }
+
     @Test fun `CameraScreen depends only on the publisher interface and the controller`() {
         val signature = screen.substring(screen.indexOf("fun CameraScreen("), screen.indexOf(") {", screen.indexOf("fun CameraScreen(")))
         assertTrue(signature, "controller: SessionController" in signature && "publisher: CanonicalSourcePublisher" in signature)
@@ -189,6 +247,13 @@ class CameraScreenContractTest {
     private fun stretches(text: String): List<String> =
         listOf("aspectRatio(", "ContentScale.FillBounds", "ContentScale.Crop", "scaleX", "scaleY", "setScaleX(", "setScaleY(", "AspectRatioMode")
             .filter { it in text }
+
+    /** Every text field for the video passphrase or the publish password is masked, and there is at least one of each. */
+    private fun masksCredentials(text: String): Boolean {
+        val secrets = calls(text, "OutlinedTextField").filter { args -> args.any { "srtPassphrase" in it || "publishPassword" in it } }
+        val both = listOf("srtPassphrase", "publishPassword").all { name -> secrets.any { args -> args.any { name in it } } }
+        return both && secrets.all { "visualTransformation = PasswordVisualTransformation()" in it } && "VisualTransformation.None" !in text
+    }
 
     /** Settings that would cut a line of text short instead of letting it wrap. */
     private fun cuts(text: String): List<String> =
