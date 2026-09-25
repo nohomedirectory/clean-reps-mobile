@@ -8,7 +8,6 @@ import com.vaylith.cleanrepsmobile.api.MobileVerdictEvent
 import com.vaylith.cleanrepsmobile.api.ServerHealth
 import com.vaylith.cleanrepsmobile.api.SessionCounts
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticStep
-import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsEntry
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
 import com.vaylith.cleanrepsmobile.diagnostics.StepMessages
 import com.vaylith.cleanrepsmobile.feedback.AthleteSignals
@@ -315,8 +314,8 @@ class SessionController(
     /** C4 thumbnail [index] (0, 1 or 2) of that report, as JPEG bytes; the card decodes it in memory only. */
     suspend fun thumbnail(captureId: String, index: Int): FetchResult<ByteArray> = backend.thumbnail(captureId, index)
 
-    /** The last DiagnosticsLog events, oldest first; every message was redacted when it was recorded. */
-    fun diagnosticEvents(): List<DiagnosticsEntry> = diagnostics.entries()
+    /** The last DiagnosticsLog events as lines, oldest first, each redacted again with the current settings. */
+    fun diagnosticEventLines(): List<String> = diagnostics.exportLines()
 
     /** The Diagnostics sheet's Copy text: the same events, redacted again with the current settings. */
     fun diagnosticsExport(): String = diagnostics.exportText()

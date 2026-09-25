@@ -950,8 +950,9 @@ class SessionControllerTest {
         assertEquals(listOf("capture-1", "capture-1/thumb-2"), backend.reportReads)
         // Diagnostics: the controller's own log, and its redacted export.
         log.info(DiagnosticStep.PREVIEW_START, "probe event")
-        assertEquals(log.entries(), controller.diagnosticEvents())
-        assertTrue(controller.diagnosticEvents().last().redactedMessage == "probe event")
+        // On screen: the lines redacted again with the current settings, never the raw entries.
+        assertEquals(log.exportLines(), controller.diagnosticEventLines())
+        assertTrue(controller.diagnosticEventLines().last().endsWith("previewStart: probe event"))
         assertEquals(log.exportText(), controller.diagnosticsExport())
         assertTrue("probe event" in controller.diagnosticsExport())
     }

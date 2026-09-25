@@ -1,5 +1,6 @@
 package com.vaylith.cleanrepsmobile.ui
 
+import com.vaylith.cleanrepsmobile.api.ServerHealth
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticStep
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
 import com.vaylith.cleanrepsmobile.diagnostics.Redaction
@@ -25,9 +26,10 @@ class DiagnosticsSheetModelTest {
     private fun log(redaction: Redaction = Redaction.forSettings(settings)) = DiagnosticsLog(clock = { 1_000L }, sink = { _, _, _ -> }, redaction = redaction)
 
     @Test fun `build identity and the camera geometry`() {
-        val model = DiagnosticsModel.from(build, 90, landscape, emptyList(), "")
+        val model = DiagnosticsModel.from(build, 90, landscape, emptyList(), "", null)
         assertEquals(
-            listOf("App 0.3.0-rehearsal (version code 3)", "Git SHA 4acbcce0123456789abcdef0123456789abcdef0", "Phone Motorola moto g power, Android SDK 34"),
+            listOf("App 0.3.0-rehearsal (version code 3)", "Git SHA 4acbcce0123456789abcdef0123456789abcdef0", "Phone Motorola moto g power, Android SDK 34",
+                "Server release: not checked yet"),
             model.identity,
         )
         assertEquals(
@@ -35,24 +37,24 @@ class DiagnosticsSheetModelTest {
             model.camera,
         )
         assertFalse(model.cameraUnverified)
-        val unknown = DiagnosticsModel.from(build, null, null, emptyList(), "")
+        val unknown = DiagnosticsModel.from(build, null, null, emptyList(), "", null)
         assertEquals(listOf("Back camera sensor orientation: unavailable", "Prepared geometry: not prepared yet"), unknown.camera)
         assertEquals(listOf("No events yet"), unknown.events)
     }
 
     @Test fun `a 270-degree sensor is flagged as unverified`() {
         assertTrue(sensor270.sensorCompensationUnverified)
-        val model = DiagnosticsModel.from(build, 270, sensor270, emptyList(), "")
+        val model = DiagnosticsModel.from(build, 270, sensor270, emptyList(), "", null)
         assertTrue(model.cameraUnverified)
         assertEquals(DiagnosticsModel.UNVERIFIED_270, model.camera.last())
         // The sensor reading alone is enough, before any prepare.
-        assertTrue(DiagnosticsModel.from(build, 270, null, emptyList(), "").cameraUnverified)
+        assertTrue(DiagnosticsModel.from(build, 270, null, emptyList(), "", null).cameraUnverified)
     }
 
     @Test fun `the events are the log's last 100, newest first, and Copy is the log's redacted export`() {
         val log = log()
         repeat(130) { log.info(DiagnosticStep.PREVIEW_START, "event $it") }
-        val model = DiagnosticsModel.from(build, 90, landscape, log.entries(), log.exportText())
+        val model = DiagnosticsModel.from(build, 90, landscape, log.exportLines(), log.exportText(), null)
         assertEquals(100, model.events.size)
         assertTrue(model.events.first().endsWith("event 129"))
         assertTrue(model.events.last().endsWith("event 30"))
@@ -65,7 +67,7 @@ class DiagnosticsSheetModelTest {
         log.fail(DiagnosticStep.SRT_CONNECT, "connect to 192.0.2.10:8890 with ${settings.srtPassphrase} failed")
         log.fail(DiagnosticStep.CREATE_SESSION, "server said", IOException("password ${settings.publishPassword} rejected by api.example.test"))
         log.info(DiagnosticStep.CLIENT_INFO, "publishing as ${settings.publishPassword}")
-        val model = DiagnosticsModel.from(build, 90, landscape, log.entries(), log.exportText())
+        val model = DiagnosticsModel.from(build, 90, landscape, log.exportLines(), log.exportText(), null)
         for (secret in listOf(settings.srtPassphrase, settings.publishPassword)) {
             assertFalse("copy text leaks $secret", secret in model.copyText)
             model.events.forEach { assertFalse("event leaks $secret: $it", secret in it) }
@@ -73,13 +75,30 @@ class DiagnosticsSheetModelTest {
         assertEquals(3, model.events.size)
     }
 
-    @Test fun `a secret recorded before the settings were known is redacted at Copy time (planted)`() {
+    @Test fun `a secret recorded before the settings were known is redacted on screen and at Copy time (planted)`() {
         val late = "late-configured-secret-55"
         val log = log(Redaction.PATTERNS_ONLY)
         log.info(DiagnosticStep.PUBLISHER_START, "value $late seen")
         assertTrue("the entry was recorded before the settings knew it", log.entries().single().redactedMessage.contains(late))
         log.redaction = Redaction.forSettings(settings.copy(publishPassword = late))
-        assertFalse(late in DiagnosticsModel.from(build, 90, landscape, log.entries(), log.exportText()).copyText)
+        val model = DiagnosticsModel.from(build, 90, landscape, log.exportLines(), log.exportText(), null)
+        assertFalse(late in model.copyText)
+        assertTrue("on-screen events leak: ${model.events}", model.events.none { late in it })
+        assertEquals(1, model.events.size)
+        assertTrue(model.events.single().endsWith("value <redacted> seen"))
+        // Planted: the entries as recorded (the 09e6463 on-screen source) still hold it; only exportLines redacts them again.
+        assertTrue(log.entries().map { it.line() }.any { late in it })
+    }
+
+    @Test fun `the sheet shows the server release in full`() {
+        val release = "0123abcdef0123abcdef0123abcdef0123abcdef"
+        assertEquals("Server release $release", DiagnosticsModel.serverLine(ServerHealth(reachable = true, release = release)))
+        assertEquals("Server release unknown", DiagnosticsModel.serverLine(ServerHealth(reachable = true, release = "unknown")))
+        assertEquals("Server release not reported", DiagnosticsModel.serverLine(ServerHealth(reachable = true, release = null)))
+        assertEquals("Server release: unknown (server unreachable)", DiagnosticsModel.serverLine(ServerHealth(reachable = false, release = null)))
+        assertEquals("Server release: not checked yet", DiagnosticsModel.serverLine(null))
+        val model = DiagnosticsModel.from(build, 90, landscape, emptyList(), "", ServerHealth(true, release))
+        assertEquals("Server release $release", model.identity.last())
     }
 
     @Test fun `Frame check reports the whole transmitted frame at the encoder size`() {

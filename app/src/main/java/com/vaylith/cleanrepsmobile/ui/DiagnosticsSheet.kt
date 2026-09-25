@@ -51,7 +51,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.vaylith.cleanrepsmobile.BuildConfig
-import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsEntry
+import com.vaylith.cleanrepsmobile.api.ServerHealth
 import com.vaylith.cleanrepsmobile.media.CanonicalSourcePublisher
 import com.vaylith.cleanrepsmobile.media.CaptureGeometry
 
@@ -73,9 +73,11 @@ data class BuildIdentity(
 }
 
 /**
- * What the Diagnostics sheet shows, derived purely: the build identity, the camera's sensor
- * orientation and the geometry the encoder is prepared with (flagging the unverified sensor-270
- * compensation), the last events newest first, and the Copy text (M3a's redacted export).
+ * What the Diagnostics sheet shows, derived purely: the build identity and the server release
+ * (C5), the camera's sensor orientation and the geometry the encoder is prepared with (flagging
+ * the unverified sensor-270 compensation), the last events newest first, and the Copy text (M3a's
+ * redacted export). [eventLines] are `DiagnosticsLog.exportLines()`: every line redacted again
+ * with the current settings, like the Copy text, never the entries as they were recorded.
  */
 data class DiagnosticsModel(
     val identity: List<String>,
@@ -89,13 +91,21 @@ data class DiagnosticsModel(
         const val UNVERIFIED_270 = "Sensor at 270 degrees: the rotation compensation is not verified on this hardware. Check the frame below."
         const val NO_EVENTS = "No events yet"
 
-        fun from(build: BuildIdentity, sensorDeg: Int?, geometry: CaptureGeometry?, events: List<DiagnosticsEntry>, exportText: String): DiagnosticsModel {
+        fun from(
+            build: BuildIdentity,
+            sensorDeg: Int?,
+            geometry: CaptureGeometry?,
+            eventLines: List<String>,
+            exportText: String,
+            health: ServerHealth?,
+        ): DiagnosticsModel {
             val unverified = geometry?.sensorCompensationUnverified == true || sensorDeg == 270
             return DiagnosticsModel(
                 identity = listOf(
                     "App ${build.versionName} (version code ${build.versionCode})",
                     "Git SHA ${build.gitSha}",
                     "Phone ${build.manufacturer} ${build.model}, Android SDK ${build.sdkInt}".replace("  ", " "),
+                    serverLine(health),
                 ),
                 camera = listOfNotNull(
                     "Back camera sensor orientation: ${sensorDeg?.let { "$it degrees" } ?: "unavailable"}",
@@ -105,9 +115,16 @@ data class DiagnosticsModel(
                     UNVERIFIED_270.takeIf { unverified },
                 ),
                 cameraUnverified = unverified,
-                events = events.asReversed().map { it.line() }.ifEmpty { listOf(NO_EVENTS) },
+                events = eventLines.asReversed().ifEmpty { listOf(NO_EVENTS) },
                 copyText = exportText,
             )
+        }
+
+        /** The server's full `release` from `GET /health` (the chip shows 7 characters), as clean-reps C5 asks. */
+        fun serverLine(health: ServerHealth?): String = when {
+            health == null -> "Server release: not checked yet"
+            !health.reachable -> "Server release: unknown (server unreachable)"
+            else -> "Server release ${health.release ?: "not reported"}"
         }
 
         /** The Frame check result line: the size of the WHOLE transmitted frame, including what the filled preview crops. */
@@ -133,14 +150,15 @@ private data class FrameCheckResult(val image: ImageBitmap?, val text: String)
 fun DiagnosticsSheet(
     landscape: Boolean,
     publisher: CanonicalSourcePublisher,
-    events: () -> List<DiagnosticsEntry>,
+    health: ServerHealth?,
+    eventLines: () -> List<String>,
     exportText: () -> String,
     onDismiss: () -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
     var refresh by remember { mutableIntStateOf(0) }
-    val model = remember(refresh) {
-        DiagnosticsModel.from(BuildIdentity.current(), publisher.sensorOrientationDeg, publisher.preparedGeometry, events(), exportText())
+    val model = remember(refresh, health) {
+        DiagnosticsModel.from(BuildIdentity.current(), publisher.sensorOrientationDeg, publisher.preparedGeometry, eventLines(), exportText(), health)
     }
     var frame by remember { mutableStateOf<FrameCheckResult?>(null) }
     var checking by remember { mutableStateOf(false) }

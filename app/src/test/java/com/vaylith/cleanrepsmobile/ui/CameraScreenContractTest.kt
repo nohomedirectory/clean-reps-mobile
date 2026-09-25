@@ -198,7 +198,7 @@ class CameraScreenContractTest {
             "OverflowAction.DIAGNOSTICS -> diagnosticsOpen = true",
             "fetchReport = { controller.qualityReport(captureId) }",
             "fetchThumbnail = { index -> controller.thumbnail(captureId, index) }",
-            "DiagnosticsSheet(landscape, publisher, controller::diagnosticEvents, controller::diagnosticsExport",
+            "DiagnosticsSheet(landscape, publisher, health, controller::diagnosticEventLines, controller::diagnosticsExport,",
         ).forEach { assertTrue(it, it in screen) }
         // Thumbnails and the Frame check image are decoded and shown in memory only.
         listOf("SessionCheckCard.kt", "DiagnosticsSheet.kt").forEach { file -> assertEquals(file, emptyList<String>(), storageWrites(ui.getValue(file))) }
@@ -212,6 +212,11 @@ class CameraScreenContractTest {
         val sheet = ui.getValue("DiagnosticsSheet.kt")
         assertTrue("publisher.frameCheck {" in sheet)
         assertTrue("contentScale = ContentScale.Fit" in sheet)
+        // On-screen events are the log's exportLines (redacted again with the current settings), never its raw entries.
+        assertFalse("DiagnosticsEntry" in sheet)
+        val controllerCode = code(mainSources.single { it.first == "SessionController.kt" }.second)
+        assertTrue("fun diagnosticEventLines(): List<String> = diagnostics.exportLines()" in controllerCode)
+        assertFalse(Regex("""diagnostics\.entries\(\)""").containsMatchIn(controllerCode))
     }
 
     @Test fun `the rotation banner comes from OrientationEventListener through the quantizer, only while the video runs`() {

@@ -149,6 +149,22 @@ class DiagnosticsLogTest {
         )
     }
 
+    @Test fun `export lines apply the current settings too, one per entry, oldest first`() {
+        val early = DiagnosticsLog(clock = { now }, sink = FakeSink())
+        early.info(DiagnosticStep.HEALTH, "typed later-secret-value before saving")
+        early.ok(DiagnosticStep.CREATE_SESSION, "session created")
+        // Recorded before the settings knew it: the stored entry still holds the value.
+        assertTrue(early.entries().first().redactedMessage.contains("later-secret-value"))
+        early.redaction = Redaction.forSettings(settings.copy(publishPassword = "later-secret-value"))
+        val lines = early.exportLines()
+        assertEquals(2, lines.size)
+        assertTrue(lines.none { it.contains("later-secret-value") })
+        assertTrue(lines[0].endsWith("health: typed <redacted> before saving"))
+        assertTrue(lines[1].endsWith("createSession: session created"))
+        // The same lines as the Copy text, after its header.
+        assertEquals(lines, early.exportText().trimEnd('\n').lines().drop(1))
+    }
+
     @Test fun `export applies the current settings to entries stored before they were known`() {
         val early = DiagnosticsLog(clock = { now }, sink = FakeSink())
         early.info(DiagnosticStep.HEALTH, "typed later-secret-value before saving")

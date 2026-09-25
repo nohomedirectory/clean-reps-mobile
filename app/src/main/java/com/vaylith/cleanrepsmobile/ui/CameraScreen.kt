@@ -236,7 +236,8 @@ fun CameraScreen(
             )
         }
         if (diagnosticsOpen) {
-            DiagnosticsSheet(landscape, publisher, controller::diagnosticEvents, controller::diagnosticsExport, onDismiss = { diagnosticsOpen = false })
+            DiagnosticsSheet(landscape, publisher, health, controller::diagnosticEventLines, controller::diagnosticsExport,
+                onDismiss = { diagnosticsOpen = false })
         }
     }
 }

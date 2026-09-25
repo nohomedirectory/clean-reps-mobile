@@ -102,6 +102,15 @@ class DiagnosticsLog(
     /** Oldest first. */
     fun entries(): List<DiagnosticsEntry> = synchronized(lock) { ring.toList() }
 
+    /**
+     * The Diagnostics sheet's on-screen lines, oldest first, each redacted again with the current
+     * settings: an entry recorded before a secret was configured is shown without it.
+     */
+    fun exportLines(): List<String> {
+        val current = redaction
+        return entries().map { current.redact(it.line()) }
+    }
+
     /** Text for the Diagnostics sheet's Copy action, redacted again with the current settings. */
     fun exportText(): String {
         val snapshot = entries()
