@@ -6,7 +6,11 @@
          device without one so it can surface a truthful readiness failure. -->
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <application android:allowBackup="false" android:usesCleartextTraffic="true" android:label="Clean Reps Mobile" android:theme="@style/Theme.CleanReps">
-        <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="portrait">
+        <!-- Follow the phone's physical orientation, as camera apps do, and handle
+             rotation in place: recreating the Activity would drop its state and
+             stop the video. -->
+        <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="sensor"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
