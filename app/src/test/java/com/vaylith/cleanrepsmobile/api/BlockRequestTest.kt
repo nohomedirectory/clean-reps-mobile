@@ -12,4 +12,11 @@ class BlockRequestTest {
         assertTrue(body.contains("\"targetHeight\":\"high\""))
         assertFalse(blockRequestBody(BlockSelection()).contains("targetHeight"))
     }
+
+    @Test fun `the default drill is the auto-judged teep, right, against a hanging bag`() {
+        val body = blockRequestBody(BlockSelection())
+        assertTrue(body.contains("\"technique\":\"teep\""))
+        assertTrue(body.contains("\"side\":\"right\""))
+        assertTrue(body.contains("\"targetContext\":\"hanging_bag\""))
+    }
 }

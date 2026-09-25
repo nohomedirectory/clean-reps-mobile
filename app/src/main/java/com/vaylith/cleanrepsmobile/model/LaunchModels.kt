@@ -1,10 +1,11 @@
 package com.vaylith.cleanrepsmobile.model
 
 /** Mirrors clean-reps million-kicks-launch.v1.json; official count is server-owned. */
-enum class KickTechnique(val wireValue: String, val label: String) {
-    TEEP("teep", "Teep"),
-    ROUNDHOUSE("roundhouse", "Roundhouse"),
-    SIDE_KICK("side_kick", "Side kick"),
+/** Only [autoJudged] techniques are analysed live; the others are shown but not selectable this round. */
+enum class KickTechnique(val wireValue: String, val label: String, val autoJudged: Boolean) {
+    TEEP("teep", "Teep", autoJudged = true),
+    ROUNDHOUSE("roundhouse", "Roundhouse", autoJudged = false),
+    SIDE_KICK("side_kick", "Side kick", autoJudged = false),
 }
 enum class KickSide(val label: String) { RIGHT("Right"), LEFT("Left") }
 enum class KickTarget(val wireValue: String, val label: String) {
@@ -17,9 +18,9 @@ enum class CaptureReadiness { NOT_CONFIGURED, PUBLISHER_UNAVAILABLE, CONNECTING,
 enum class VerdictTone { ACCEPTED, REJECTED, NEUTRAL }
 
 data class BlockSelection(
-    val technique: KickTechnique = KickTechnique.SIDE_KICK,
+    val technique: KickTechnique = KickTechnique.TEEP,
     val side: KickSide = KickSide.RIGHT,
-    val targetContext: KickTarget = KickTarget.STANDING_BAG,
+    val targetContext: KickTarget = KickTarget.HANGING_BAG,
     val targetHeight: TargetHeight? = null,
     val intent: String = "challenge_counting",
     val cameraProfile: String = "fixed_full_body_oblique_v1",
