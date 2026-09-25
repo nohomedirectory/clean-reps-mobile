@@ -13,9 +13,10 @@ class FakeSurface(val id: Int) {
  * thrown exception alone could hide a broken invariant.
  *
  * [startStream], [stopStream], [startRecord] and [stopRecord] are the caller's
- * side (the publisher), not part of the port.
+ * side (the publisher), not part of the port. The last three, with [release],
+ * are its [StreamControl].
  */
-class FakeEncoderPort : EncoderPort<FakeSurface> {
+class FakeEncoderPort : EncoderPort<FakeSurface>, StreamControl {
     override var isOnPreview = false
         private set
     override var isStreaming = false
@@ -38,10 +39,17 @@ class FakeEncoderPort : EncoderPort<FakeSurface> {
     var startPreviewFailure: String? = null
     /** When set, `prepareVideo` throws like `Camera2Source.create` for an unsupported size. */
     var prepareFailure: String? = null
+    /** Geometries the hardware encoder refuses: `prepareVideo` returns false for them. */
+    var encoderRefuses: (CaptureGeometry) -> Boolean = { false }
     var audioAvailable = true
+    /** When set, `stopStream` throws after stopping, to prove a release goes on. */
+    var stopStreamFailure: String? = null
+    var released = false
+        private set
 
     override fun prepareVideo(geometry: CaptureGeometry): Boolean {
         calls += "prepareVideo(${geometry.rotationArg})"
+        if (released) violations += "prepareVideo after release"
         if (isStreaming || isRecording || isOnPreview) {
             violations += "I1: prepareVideo(${geometry.label}) with preview=$isOnPreview stream=$isStreaming record=$isRecording"
             throw IllegalStateException("Stream, record and preview must be stopped before prepareVideo")
@@ -49,6 +57,10 @@ class FakeEncoderPort : EncoderPort<FakeSurface> {
         prepareFailure?.let {
             preparedGeometry = null
             throw IllegalArgumentException(it)
+        }
+        if (encoderRefuses(geometry)) {
+            preparedGeometry = null
+            return false
         }
         preparedGeometry = geometry
         return true
@@ -61,6 +73,7 @@ class FakeEncoderPort : EncoderPort<FakeSurface> {
 
     override fun startPreview(surface: FakeSurface, width: Int, height: Int) {
         calls += "startPreview($surface,${width}x$height)"
+        if (released) violations += "startPreview after release"
         if (!surface.valid) {
             violations += "I2: startPreview with invalid $surface"
             throw IllegalArgumentException("Make sure the Surface is valid")
@@ -101,9 +114,10 @@ class FakeEncoderPort : EncoderPort<FakeSurface> {
     }
 
     /** RootEncoder re-prepares the encoders with the stored parameters: the geometry is unchanged. */
-    fun stopStream() {
+    override fun stopStream() {
         calls += "stopStream"
         isStreaming = false
+        stopStreamFailure?.let { throw IllegalStateException(it) }
     }
 
     fun startRecord() {
@@ -112,8 +126,19 @@ class FakeEncoderPort : EncoderPort<FakeSurface> {
         isRecording = true
     }
 
-    fun stopRecord() {
+    override fun stopRecord() {
         calls += "stopRecord"
         isRecording = false
+    }
+
+    /** StreamBase.release(): the stream is unusable afterwards. */
+    override fun release() {
+        calls += "release"
+        // Not bytecode facts (release() would stop them itself): the publisher's own rules.
+        if (released) violations += "release called twice"
+        if (isStreaming || isRecording || isOnPreview) {
+            violations += "release order: preview=$isOnPreview stream=$isStreaming record=$isRecording still on"
+        }
+        released = true
     }
 }

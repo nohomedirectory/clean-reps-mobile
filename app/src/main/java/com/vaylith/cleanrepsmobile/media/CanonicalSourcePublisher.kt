@@ -1,6 +1,7 @@
 package com.vaylith.cleanrepsmobile.media
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Handler
@@ -8,9 +9,13 @@ import android.os.Looper
 import android.view.Surface
 import android.view.SurfaceView
 import com.pedro.common.ConnectChecker
+import com.pedro.encoder.input.sources.video.Camera2Source
+import com.pedro.encoder.input.video.CameraCallbacks
+import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.utils.gl.AspectRatioMode
 import com.pedro.library.base.recording.RecordController
 import com.pedro.library.srt.SrtStream
+import com.pedro.library.view.RenderErrorCallback
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticStep
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
 import com.vaylith.cleanrepsmobile.model.SourceEpoch
@@ -39,6 +44,25 @@ interface CanonicalSourcePublisher {
 
     /** SENSOR_ORIENTATION of the first back camera; null when it could not be read. */
     val sensorOrientationDeg: Int?
+
+    /** "Reopen camera" after CAMERA_ERROR: one new attempt to open the camera and start the preview. */
+    fun reopenCamera()
+
+    /**
+     * Frame check: [callback] runs once on the main thread with the next frame of
+     * the WHOLE transmitted picture at the encoder size (including what the
+     * filled preview crops) and its width and height, or with `(null, 0, 0)`
+     * when no frame is being drawn or none arrived in time.
+     */
+    fun frameCheck(callback: (Bitmap?, Int, Int) -> Unit)
+
+    /**
+     * Stops the recording and the stream, stops the preview, releases the camera,
+     * GL and encoders, then unregisters the display watcher and the surface
+     * callback. Idempotent; the publisher cannot be used again. It reports nothing
+     * to the listener: the caller owns the end of the capture. Main thread.
+     */
+    fun release()
 }
 
 sealed interface PublisherResult {
@@ -113,19 +137,32 @@ class MediaMtxSrtPublisher(
         // Camera-app-like preview: scale uniformly to cover the view and centre-crop, never stretch.
         getGlInterface().setAspectRatioMode(AspectRatioMode.Fill)
     }
+    private val port = SrtStreamEncoderPort(stream)
     private val mainThread = Handler(Looper.getMainLooper())
     private val rotationWatcher: DisplayRotationWatcher =
         DisplayRotationWatcher(context) { rotation -> coordinator.displayRotationChanged(rotation) }
     private val coordinator: PreviewCoordinator<Surface> = PreviewCoordinator(
-        SrtStreamEncoderPort(stream),
+        port,
         listener,
         diagnostics,
         backCameraSensorOrientation(),
+        { delayMs, action -> mainThread.postDelayed({ action() }, delayMs) },
         rotationWatcher::currentRotation,
     )
     private val binder = PreviewSurfaceBinder(coordinator)
     private var intentionallyStopped = false
     private var discontinuityReported = false
+    private var released = false
+
+    init {
+        watchCamera()
+        // A GL draw failure (including a failed Frame check) is logged instead of thrown on the GL thread.
+        stream.getGlInterface().setRenderErrorCallback(object : RenderErrorCallback {
+            override fun onRenderError(error: RuntimeException) {
+                diagnostics?.fail(DiagnosticStep.PREVIEW_START, "render error", error)
+            }
+        })
+    }
 
     override val isAvailable get() = config.validationError() == null
     override val preparedGeometry: CaptureGeometry? get() = coordinator.preparedGeometry
@@ -133,11 +170,43 @@ class MediaMtxSrtPublisher(
 
     /** Prepares for the current display rotation, then follows rotations and the view's surface. */
     override fun attachPreview(view: SurfaceView) {
+        if (released) {
+            diagnostics?.info(DiagnosticStep.PREVIEW_START, "attachPreview ignored: publisher released")
+            return
+        }
         coordinator.displayRotationChanged(rotationWatcher.start())
         binder.install(view.holder)
     }
 
     override fun releasePreview() {
+        binder.uninstall()
+        rotationWatcher.stop()
+    }
+
+    override fun reopenCamera() = coordinator.reopenCamera()
+
+    override fun frameCheck(callback: (Bitmap?, Int, Int) -> Unit) {
+        val check = FrameCheck<Bitmap>(
+            diagnostics,
+            { answer -> mainThread.post { answer() } },
+            { timeout -> mainThread.postDelayed({ timeout() }, FrameCheck.TIMEOUT_MS) },
+        ) { frame ->
+            if (frame != null) diagnostics?.ok(DiagnosticStep.PREVIEW_START, "frame check ${frame.width}x${frame.height}")
+            callback(frame, frame?.width ?: 0, frame?.height ?: 0)
+        }
+        // takePhoto renders the next frame at the encoder size with no aspect mode;
+        // frames are drawn only while the preview is on or the stream is live.
+        check.start(drawing = !released && (stream.isOnPreview || stream.isStreaming)) { deliver ->
+            stream.getGlInterface().takePhoto { bitmap -> deliver(bitmap) }
+        }
+    }
+
+    override fun release() {
+        if (released) return
+        released = true
+        // The coming stopStream is not a transport loss.
+        intentionallyStopped = true
+        coordinator.release(port)
         binder.uninstall()
         rotationWatcher.stop()
     }
@@ -170,8 +239,7 @@ class MediaMtxSrtPublisher(
             diagnostics?.fail(DiagnosticStep.PUBLISHER_START, "video start failed", error)
             // A partial start must not leave a hidden stream after the UI says stopped.
             intentionallyStopped = true
-            runCatching { if (stream.isRecording) stream.stopRecord() }
-            runCatching { if (stream.isStreaming) stream.stopStream() }
+            stopRecordAndStream(DiagnosticStep.PUBLISHER_START, "after a failed start")
             coordinator.streamStopped()
             listener.onPublisherStatus(PublisherStatus.ERROR, "Video could not start. Check the connection and camera permissions.")
             PublisherResult.Failed("Video could not start. Check the connection and camera permissions.")
@@ -180,8 +248,7 @@ class MediaMtxSrtPublisher(
 
     override suspend fun stop() = withContext(Dispatchers.Main.immediate) {
         intentionallyStopped = true
-        runCatching { if (stream.isRecording) stream.stopRecord() }
-        runCatching { if (stream.isStreaming) stream.stopStream() }
+        stopRecordAndStream(DiagnosticStep.PUBLISHER_START, "on stop")
         // Applies a rotation that waited while streaming (I7) and restores the preview.
         coordinator.streamStopped()
         listener.onPublisherStatus(PublisherStatus.STOPPED, "Capture stopped. Local safety spool is retained in app cache.")
@@ -190,10 +257,12 @@ class MediaMtxSrtPublisher(
     override fun onConnectionStarted(url: String) = listener.onPublisherStatus(PublisherStatus.CONNECTING, "SRT handshake started.")
     override fun onConnectionSuccess() {
         discontinuityReported = false
+        diagnostics?.ok(DiagnosticStep.SRT_CONNECT, "connected")
         listener.onPublisherStatus(PublisherStatus.LIVE, "Canonical SRT source is live: ${config.path}")
     }
     override fun onDisconnect() {
         if (intentionallyStopped) return
+        diagnostics?.fail(DiagnosticStep.SRT_CONNECT, "disconnected")
         if (!discontinuityReported) {
             discontinuityReported = true
             listener.onSourceDiscontinuity("SRT publisher disconnected.")
@@ -207,6 +276,8 @@ class MediaMtxSrtPublisher(
 
     private fun connectionFailed(reason: String, retry: Boolean) {
         if (intentionallyStopped) return
+        // RootEncoder's reason goes only to the redacting log, never to the listener.
+        diagnostics?.fail(DiagnosticStep.SRT_CONNECT, "connection failed: $reason")
         if (!discontinuityReported) {
             discontinuityReported = true
             listener.onSourceDiscontinuity("Video transport interrupted.")
@@ -214,8 +285,7 @@ class MediaMtxSrtPublisher(
         val retrying = retry && stream.getStreamClient().reTry(1_500, reason)
         if (!retrying) {
             intentionallyStopped = true
-            runCatching { if (stream.isRecording) stream.stopRecord() }
-            runCatching { if (stream.isStreaming) stream.stopStream() }
+            stopRecordAndStream(DiagnosticStep.SRT_CONNECT, "after the connection failed")
             // Transport callbacks arrive off the main thread; the preview machine lives on it.
             mainThread.post { coordinator.streamStopped() }
         }
@@ -238,6 +308,50 @@ class MediaMtxSrtPublisher(
         null
     }
 
+    /**
+     * Camera callbacks arrive on RootEncoder's camera thread; the coordinator runs
+     * on the main thread. A camera failure is a preview status only (P-SEP): it
+     * never touches the transport, capture readiness or health.
+     */
+    private fun watchCamera() {
+        val camera = stream.videoSource as? Camera2Source
+        if (camera == null) {
+            diagnostics?.fail(DiagnosticStep.CAMERA_OPEN, "no camera callbacks for ${stream.videoSource.javaClass.simpleName}")
+            return
+        }
+        camera.setCameraCallback(object : CameraCallbacks {
+            override fun onCameraChanged(facing: CameraHelper.Facing) {
+                diagnostics?.info(DiagnosticStep.CAMERA_OPEN, "camera facing ${facing.name.lowercase()}")
+            }
+
+            override fun onCameraError(error: String) {
+                mainThread.post { coordinator.cameraError(error) }
+            }
+
+            override fun onCameraOpened() {
+                mainThread.post { coordinator.cameraOpened() }
+            }
+
+            override fun onCameraDisconnected() {
+                mainThread.post { coordinator.cameraDisconnected() }
+            }
+        })
+    }
+
+    /** Best effort: a failed stop is logged under [step] and the next stop still runs. */
+    private fun stopRecordAndStream(step: DiagnosticStep, phase: String) {
+        attempt(step, "stopRecord $phase") { if (stream.isRecording) stream.stopRecord() }
+        attempt(step, "stopStream $phase") { if (stream.isStreaming) stream.stopStream() }
+    }
+
+    private inline fun attempt(step: DiagnosticStep, action: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (error: Exception) {
+            diagnostics?.fail(step, "$action failed", error)
+        }
+    }
+
     private fun startSafetySpool(epoch: SourceEpoch) {
         if (stream.isRecording) return
         val directory = File(context.cacheDir, "safety-spool").apply { mkdirs() }
@@ -250,7 +364,8 @@ class MediaMtxSrtPublisher(
                     else -> Unit
                 }
             }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            diagnostics?.fail(DiagnosticStep.PUBLISHER_START, "safety recording unavailable", error)
             listener.onSafetyRecording("Local safety recording is unavailable. Video contribution continues.")
         }
     }

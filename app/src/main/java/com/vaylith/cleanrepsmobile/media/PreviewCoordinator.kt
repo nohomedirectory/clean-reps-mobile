@@ -2,6 +2,8 @@ package com.vaylith.cleanrepsmobile.media
 
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticStep
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
+import com.vaylith.cleanrepsmobile.diagnostics.FailureKind
+import com.vaylith.cleanrepsmobile.diagnostics.StepMessages
 
 /**
  * The publisher's preview and geometry logic, free of RootEncoder and Android
@@ -11,20 +13,29 @@ import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
  * back camera's sensor orientation, drives the [PreviewStateMachine], and reports
  * preview statuses only through [PublisherListener.onPreviewStatus] (P-SEP):
  * nothing here calls `onPublisherStatus`, so a preview event can never move
- * capture readiness or tear down a live capture. Port failures are recorded in
- * [diagnostics] with their exception class. Every input must arrive on one
- * thread (the main thread in the app).
+ * capture readiness or tear down a live capture. Camera callbacks are preview
+ * inputs too: a camera failure is CAMERA_ERROR, even while streaming. Port and
+ * camera failures are recorded in [diagnostics] with their exception class and
+ * cause; the listener only ever gets fixed owner-facing text. Every input must
+ * arrive on one thread (the main thread in the app).
  */
 internal class PreviewCoordinator<S>(
-    port: EncoderPort<S>,
+    private val port: EncoderPort<S>,
     private val listener: PublisherListener,
     private val diagnostics: DiagnosticsLog?,
     /** SENSOR_ORIENTATION of the first back camera; null when it could not be read. */
     val sensorOrientationDeg: Int?,
+    /** Runs an action after a delay in ms, on the input thread: the automatic retry after "camera in use". */
+    private val schedule: (Long, () -> Unit) -> Unit,
     /** A fresh read of the display rotation (0..3); null when it is unavailable. */
     private val displayRotation: () -> Int?,
 ) {
     private val machine = PreviewStateMachine(LoggingPort(port), ::report)
+    private var released = false
+    /** The one automatic retry after "camera in use" is spent until the camera opens again. */
+    private var inUseRetryUsed = false
+    /** Incremented to cancel a scheduled automatic retry. */
+    private var retryGeneration = 0
 
     val preparedGeometry: CaptureGeometry? get() = machine.preparedGeometry
     val hasSurface: Boolean get() = machine.hasSurface
@@ -46,6 +57,7 @@ internal class PreviewCoordinator<S>(
      * differs from the prepared one; call `startStream` only on [StreamGate.Ready].
      */
     fun goLive(): StreamGate {
+        if (released) return StreamGate.NotReady("The camera was released")
         val geometry = geometryFor(displayRotation())
             ?: return StreamGate.NotReady(machine.cameraError ?: "The display rotation could not be read")
         return try {
@@ -60,6 +72,69 @@ internal class PreviewCoordinator<S>(
 
     /** After both the stream and the local recording have stopped, including after a failed start. */
     fun streamStopped() = guarded { machine.streamStopped() }
+
+    /** RootEncoder's `onCameraOpened`: the camera works, so the automatic retry is available again. */
+    fun cameraOpened() = guarded {
+        inUseRetryUsed = false
+        diagnostics?.ok(DiagnosticStep.CAMERA_OPEN, "camera opened")
+    }
+
+    /**
+     * RootEncoder's `onCameraError` text, e.g. `Open camera failed: 1`. Only the
+     * diagnostics log sees it, redacted; the preview status gets owner text.
+     */
+    fun cameraError(detail: String) = guarded {
+        diagnostics?.fail(DiagnosticStep.CAMERA_OPEN, "camera error: $detail")
+        cameraFailed(inUse = CAMERA_IN_USE.matches(detail))
+    }
+
+    /** RootEncoder's `onCameraDisconnected`: another app took the camera, which counts as in use. */
+    fun cameraDisconnected() = guarded {
+        diagnostics?.fail(DiagnosticStep.CAMERA_OPEN, "camera disconnected")
+        cameraFailed(inUse = true)
+    }
+
+    /** "Reopen camera": one attempt now. A pending automatic retry is cancelled. */
+    fun reopenCamera() {
+        retryGeneration++
+        retry("reopen camera requested")
+    }
+
+    /**
+     * Ends the capture graph in this order: local recording, stream, preview,
+     * then [StreamControl.release]. A failed step is logged and the next one
+     * still runs, so the camera is always freed. Idempotent. Later inputs are
+     * ignored and a scheduled automatic retry is cancelled. Nothing is reported
+     * to the listener: the caller owns the end of the capture.
+     */
+    fun release(control: StreamControl) {
+        if (released) return
+        released = true
+        retryGeneration++
+        releaseStep(DiagnosticStep.PUBLISHER_START, "stopRecord") { if (port.isRecording) control.stopRecord() }
+        releaseStep(DiagnosticStep.PUBLISHER_START, "stopStream") { if (port.isStreaming) control.stopStream() }
+        // stopPreview(false), before StreamBase.release() could stop it with its own default.
+        releaseStep(DiagnosticStep.PREVIEW_START, "stopPreview") { if (port.isOnPreview) port.stopPreview() }
+        releaseStep(DiagnosticStep.CAMERA_OPEN, "release") { control.release() }
+        diagnostics?.info(DiagnosticStep.PUBLISHER_START, "publisher released")
+    }
+
+    private fun cameraFailed(inUse: Boolean) {
+        machine.cameraError(CAMERA_FAILED)
+        if (!inUse || inUseRetryUsed) return
+        // The other app is often still closing the camera: try once more shortly.
+        inUseRetryUsed = true
+        val generation = ++retryGeneration
+        diagnostics?.info(DiagnosticStep.CAMERA_OPEN, "camera in use: one automatic retry in $CAMERA_IN_USE_RETRY_MS ms")
+        schedule(CAMERA_IN_USE_RETRY_MS) {
+            if (generation == retryGeneration) retry("automatic retry after camera in use")
+        }
+    }
+
+    private fun retry(reason: String) = guarded {
+        diagnostics?.info(DiagnosticStep.CAMERA_OPEN, if (machine.cameraError == null) "$reason: no camera error" else reason)
+        machine.retry()
+    }
 
     private fun geometryFor(rotation: Int?): CaptureGeometry? {
         if (rotation == null) {
@@ -104,11 +179,21 @@ internal class PreviewCoordinator<S>(
             "Phone turned — video stays ${preparedGeometry?.orientation?.wireValue ?: "as it started"}. Stop video to switch."
     }
 
+    /** Runs one input unless the publisher was released; an unexpected exception becomes a camera error. */
     private inline fun guarded(block: () -> Unit) {
+        if (released) return
         try {
             block()
         } catch (error: Exception) {
             unexpected(error)
+        }
+    }
+
+    private inline fun releaseStep(step: DiagnosticStep, action: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (error: Exception) {
+            diagnostics?.fail(step, "release: $action failed", error)
         }
     }
 
@@ -141,5 +226,19 @@ internal class PreviewCoordinator<S>(
             diagnostics?.fail(step, "$action failed", error)
             throw error
         }
+    }
+
+    companion object {
+        /** Delay before the one automatic retry after "camera in use". */
+        const val CAMERA_IN_USE_RETRY_MS = 1_000L
+
+        /** Owner text for every camera callback failure; the cause goes only to the diagnostics log. */
+        val CAMERA_FAILED: String = StepMessages.message(DiagnosticStep.CAMERA_OPEN, FailureKind.Camera)
+
+        /**
+         * RootEncoder's `onError(device, code)` text for `CameraDevice.StateCallback`
+         * ERROR_CAMERA_IN_USE (1) and ERROR_MAX_CAMERAS_IN_USE (2).
+         */
+        private val CAMERA_IN_USE = Regex("""Open camera failed: [12]""")
     }
 }

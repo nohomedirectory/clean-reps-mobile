@@ -4,13 +4,13 @@ import android.view.Surface
 import com.pedro.library.srt.SrtStream
 
 /**
- * [EncoderPort] over RootEncoder 2.7.0's [SrtStream]. Video is always prepared at
- * [CaptureGeometry.PREPARE_WIDTH] x [CaptureGeometry.PREPARE_HEIGHT] with the
- * geometry's rotation argument; the library swaps the encoder size itself.
+ * [EncoderPort] and [StreamControl] over RootEncoder 2.7.0's [SrtStream]. Video is
+ * always prepared at [CaptureGeometry.PREPARE_WIDTH] x [CaptureGeometry.PREPARE_HEIGHT]
+ * with the geometry's rotation argument; the library swaps the encoder size itself.
  * [stopPreview] is always `stopPreview(false)`, never the variant that removes
  * the preview callbacks.
  */
-internal class SrtStreamEncoderPort(private val stream: SrtStream) : EncoderPort<Surface> {
+internal class SrtStreamEncoderPort(private val stream: SrtStream) : EncoderPort<Surface>, StreamControl {
     override val isOnPreview: Boolean get() = stream.isOnPreview
     override val isStreaming: Boolean get() = stream.isStreaming
     override val isRecording: Boolean get() = stream.isRecording
@@ -33,6 +33,16 @@ internal class SrtStreamEncoderPort(private val stream: SrtStream) : EncoderPort
     override fun setPreviewResolution(width: Int, height: Int) = stream.getGlInterface().setPreviewResolution(width, height)
 
     override fun isSurfaceValid(surface: Surface): Boolean = surface.isValid
+
+    override fun stopRecord() {
+        stream.stopRecord()
+    }
+
+    override fun stopStream() {
+        stream.stopStream()
+    }
+
+    override fun release() = stream.release()
 
     private companion object {
         const val VIDEO_BITRATE = 2_500_000

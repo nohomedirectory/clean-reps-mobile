@@ -1,5 +1,7 @@
 package com.vaylith.cleanrepsmobile.media
 
+import com.vaylith.cleanrepsmobile.model.CaptureOrientation
+
 /** Preview-only statuses. They never describe the transport (P-SEP). */
 sealed interface PreviewStatus {
     /** PREVIEW_STARTING: `startPreview` is about to be called. */
@@ -11,7 +13,10 @@ sealed interface PreviewStatus {
     /** PREVIEW_LOST: the preview surface went away. */
     data object Lost : PreviewStatus
 
-    /** CAMERA_ERROR: the camera or encoder failed; [PreviewStateMachine.retry] tries again once. */
+    /**
+     * CAMERA_ERROR: the camera or encoder failed; [PreviewStateMachine.retry] tries again once.
+     * [reason] is owner-facing text; it never carries an exception's message.
+     */
     data class CameraError(val reason: String) : PreviewStatus
 
     /** ROTATION_PENDING: a new geometry waits until streaming and recording stop. */
@@ -47,6 +52,10 @@ sealed interface StreamGate {
  * Every [streamRequested] that answered Ready must be closed by [streamStopped],
  * after both the stream and the local recording have stopped, including when
  * `startStream` itself failed.
+ *
+ * A failed prepare is tied to its geometry: a later successful prepare (for
+ * example landscape after the encoder refused portrait) clears it. Any other
+ * camera error waits for [retry].
  */
 class PreviewStateMachine<S>(
     private val port: EncoderPort<S>,
@@ -71,6 +80,8 @@ class PreviewStateMachine<S>(
     private var width = 0
     private var height = 0
     private var audioPrepared = false
+    /** True while [cameraError] came from a failed prepare, which a successful prepare clears. */
+    private var prepareFailed = false
 
     val hasSurface: Boolean get() = surface != null
 
@@ -162,8 +173,10 @@ class PreviewStateMachine<S>(
         if (target != null && target != preparedGeometry) applyGeometry(target) else ensurePreview()
     }
 
+    /** [message] is owner-facing text; it stays until [retry]. */
     fun cameraError(message: String) {
         cameraError = message
+        prepareFailed = false
         onStatus(PreviewStatus.CameraError(message))
     }
 
@@ -171,6 +184,7 @@ class PreviewStateMachine<S>(
     fun retry() {
         if (cameraError == null) return
         cameraError = null
+        prepareFailed = false
         if (port.isOnPreview) port.stopPreview()
         ensurePreview()
     }
@@ -186,12 +200,20 @@ class PreviewStateMachine<S>(
             port.prepareVideo(target)
         } catch (error: Exception) {
             preparedGeometry = null
-            fail("The camera cannot provide ${target.label}: ${error.message ?: error.javaClass.simpleName}")
+            // Camera2Source.create throws IllegalArgumentException when the camera lacks the size.
+            failPrepare(
+                if (error is IllegalArgumentException) UNSUPPORTED_CAMERA_SIZE
+                else "The video encoder could not be prepared (${error.javaClass.simpleName})",
+            )
             return false
         }
         if (!prepared) {
             preparedGeometry = null
-            fail("This device cannot prepare the video encoder for ${target.label}")
+            // The hardware encoder refused the size; a landscape prepare may still succeed.
+            failPrepare(
+                if (target.orientation == CaptureOrientation.PORTRAIT) PORTRAIT_UNSUPPORTED
+                else "This device cannot prepare the video encoder for ${target.label}",
+            )
             return false
         }
         preparedGeometry = target
@@ -202,9 +224,14 @@ class PreviewStateMachine<S>(
                 false
             }
             if (!audioPrepared) {
-                fail("This device cannot prepare the microphone encoder")
+                failPrepare("This device cannot prepare the microphone encoder")
                 return false
             }
+        }
+        if (prepareFailed) {
+            // The earlier failure belonged to another geometry or attempt; this one is usable.
+            prepareFailed = false
+            cameraError = null
         }
         ensurePreview()
         return true
@@ -223,14 +250,29 @@ class PreviewStateMachine<S>(
         try {
             port.startPreview(current, width, height)
         } catch (error: Exception) {
-            fail("Camera preview failed: ${error.message ?: error.javaClass.simpleName}")
+            fail("Camera preview failed (${error.javaClass.simpleName})")
             return
         }
         onStatus(PreviewStatus.Ready)
     }
 
+    private fun failPrepare(reason: String) {
+        fail(reason)
+        prepareFailed = true
+    }
+
     private fun fail(reason: String) {
         cameraError = reason
+        prepareFailed = false
         onStatus(PreviewStatus.CameraError(reason))
+    }
+
+    companion object {
+        /** The camera cannot deliver the one size the encoder is prepared from. */
+        val UNSUPPORTED_CAMERA_SIZE =
+            "This camera cannot provide ${CaptureGeometry.PREPARE_WIDTH}x${CaptureGeometry.PREPARE_HEIGHT} video"
+
+        /** `prepareVideo` returned false for a portrait geometry (720x1280 refused by the encoder). */
+        const val PORTRAIT_UNSUPPORTED = "Portrait video not supported on this phone - use landscape"
     }
 }

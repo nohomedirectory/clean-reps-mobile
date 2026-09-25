@@ -45,3 +45,21 @@ interface EncoderPort<S> {
     /** The surface's own validity check (`Surface.isValid`), not a RootEncoder call. */
     fun isSurfaceValid(surface: S): Boolean
 }
+
+/**
+ * The calls that end a capture, which the state machine never makes: the
+ * publisher's [PreviewCoordinator.release] uses them, in its documented order.
+ */
+interface StreamControl {
+    /** `stopRecord()`: finalises the local safety recording. */
+    fun stopRecord()
+
+    /** `stopStream()`: ends the SRT stream. */
+    fun stopStream()
+
+    /**
+     * `release()`: stops the camera, GL and microphone sources and releases them.
+     * The stream cannot be used afterwards.
+     */
+    fun release()
+}

@@ -3,6 +3,7 @@ package com.vaylith.cleanrepsmobile.media
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticOutcome
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticStep
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
+import com.vaylith.cleanrepsmobile.diagnostics.Redaction
 import com.vaylith.cleanrepsmobile.model.CaptureOrientation
 import org.junit.After
 import org.junit.Assert.*
@@ -24,14 +25,30 @@ class PreviewCoordinatorTest {
         }
     }
 
+    /** The coordinator's delayed actions; they run only when a test runs them. */
+    private class ManualScheduler {
+        val pending = mutableListOf<Pair<Long, () -> Unit>>()
+
+        fun schedule(delayMs: Long, action: () -> Unit) {
+            pending += delayMs to action
+        }
+
+        fun runAll() {
+            val due = pending.toList()
+            pending.clear()
+            due.forEach { it.second() }
+        }
+    }
+
     private val port = FakeEncoderPort()
     private val listener = RecordingListener()
     private val log = DiagnosticsLog(clock = { 0L }, sink = { _, _, _ -> })
+    private val scheduler = ManualScheduler()
     private var rotation: Int? = 1
     private val surface = FakeSurface(1)
 
-    private fun coordinator(sensor: Int? = 90, encoder: EncoderPort<FakeSurface> = port) =
-        PreviewCoordinator(encoder, listener, log, sensor) { rotation }
+    private fun coordinator(sensor: Int? = 90, encoder: EncoderPort<FakeSurface> = port, diagnostics: DiagnosticsLog = log) =
+        PreviewCoordinator(encoder, listener, diagnostics, sensor, scheduler::schedule) { rotation }
 
     private fun statuses() = listener.previewStatuses.map { it.first }
 
@@ -144,21 +161,181 @@ class PreviewCoordinatorTest {
         coordinator().attach()
         val (error, detail) = listener.previewStatuses.last()
         assertTrue("$error", error is PreviewStatus.CameraError)
-        assertTrue(detail, detail.contains("Camera in use by another app"))
+        // M4c: the exception's own text goes only to the redacting log, never to a listener string.
+        assertEquals("Camera preview failed (RuntimeException)", detail)
         val entry = log.entries().single { it.outcome == DiagnosticOutcome.FAIL }
         assertEquals(DiagnosticStep.PREVIEW_START, entry.step)
         assertEquals("RuntimeException", entry.errorClass)
+        assertTrue(entry.redactedMessage, entry.redactedMessage.contains("Camera in use by another app"))
     }
 
     @Test fun `an unsupported camera size is logged as a cameraOpen failure`() {
-        port.prepareFailure = "Resolution 1280x720 not supported"
+        port.prepareFailure = "Unsupported resolution: 1280x720"
         val coordinator = coordinator()
         coordinator.displayRotationChanged(rotation)
-        assertTrue(statuses().single() is PreviewStatus.CameraError)
+        assertEquals(PreviewStatus.CameraError("This camera cannot provide 1280x720 video"), statuses().single())
+        assertEquals("This camera cannot provide 1280x720 video", listener.previewStatuses.single().second)
         val entry = log.entries().single { it.outcome == DiagnosticOutcome.FAIL }
         assertEquals(DiagnosticStep.CAMERA_OPEN, entry.step)
         assertEquals("IllegalArgumentException", entry.errorClass)
-        assertTrue(coordinator.goLive() is StreamGate.NotReady)
+        assertTrue(entry.redactedMessage.contains("Unsupported resolution: 1280x720"))
+        assertEquals(StreamGate.NotReady("This camera cannot provide 1280x720 video"), coordinator.goLive())
+    }
+
+    @Test fun `an encoder that refuses portrait gets the exact message and landscape stays available`() {
+        port.encoderRefuses = { it.orientation == CaptureOrientation.PORTRAIT }
+        rotation = 0
+        val coordinator = coordinator().attach(width = 1080, height = 2400)
+        val portraitRefused = "Portrait video not supported on this phone - use landscape"
+        assertEquals(PreviewStatus.CameraError(portraitRefused), statuses().last())
+        assertEquals(portraitRefused, listener.previewStatuses.last().second)
+        assertFalse(port.isOnPreview)
+        assertEquals(StreamGate.NotReady(portraitRefused), coordinator.goLive())
+        assertTrue(log.entries().any { it.step == DiagnosticStep.CAMERA_OPEN && it.redactedMessage == "prepareVideo portrait 720x1280 returned false" })
+
+        // Turning to landscape needs no Reopen camera: that prepare succeeds and the preview starts.
+        rotation = 1
+        coordinator.displayRotationChanged(1)
+        assertEquals("landscape 1280x720", coordinator.preparedGeometry?.label)
+        assertEquals(PreviewStatus.Ready, statuses().last())
+        assertTrue(port.isOnPreview)
+        assertEquals("landscape 1280x720", coordinator.goLiveAndStream().label)
+    }
+
+    @Test fun `a camera error while streaming is only a preview status and the stream keeps running`() {
+        val coordinator = coordinator().attach()
+        coordinator.goLiveAndStream()
+        port.startRecord()
+        port.calls.clear()
+
+        // ERROR_CAMERA_DEVICE (4): not "in use", so there is no automatic retry either.
+        coordinator.cameraError("Open camera failed: 4")
+        assertEquals(PreviewStatus.CameraError(PreviewCoordinator.CAMERA_FAILED) to PreviewCoordinator.CAMERA_FAILED, listener.previewStatuses.last())
+        assertEquals("Camera problem during camera open — close other camera apps and try again", PreviewCoordinator.CAMERA_FAILED)
+        assertTrue(port.isStreaming)
+        assertTrue(port.isRecording)
+        assertEquals("no stop, prepare or preview call", emptyList<String>(), port.calls)
+        assertTrue(scheduler.pending.isEmpty())
+        assertEquals("landscape 1280x720", coordinator.preparedGeometry?.label)
+        // (@After: no transport status, so capture readiness and health cannot change.)
+    }
+
+    @Test fun `Reopen camera retries and the preview is ready again`() {
+        val coordinator = coordinator().attach()
+        coordinator.cameraError("Open camera failed: 4")
+        port.calls.clear()
+
+        coordinator.reopenCamera()
+        assertEquals(listOf("stopPreview", "startPreview(surface#1,2400x1080)"), port.calls)
+        assertEquals(listOf(PreviewStatus.Starting, PreviewStatus.Ready), statuses().takeLast(2))
+        assertTrue(log.entries().any { it.step == DiagnosticStep.CAMERA_OPEN && it.redactedMessage == "reopen camera requested" })
+
+        port.calls.clear()
+        coordinator.reopenCamera()
+        assertEquals("nothing to reopen", emptyList<String>(), port.calls)
+    }
+
+    @Test fun `camera in use is retried automatically exactly once`() {
+        val coordinator = coordinator().attach()
+        coordinator.cameraError("Open camera failed: 1")
+        assertEquals(PreviewStatus.CameraError(PreviewCoordinator.CAMERA_FAILED), statuses().last())
+        assertEquals(listOf(PreviewCoordinator.CAMERA_IN_USE_RETRY_MS), scheduler.pending.map { it.first })
+
+        port.calls.clear()
+        scheduler.runAll()
+        assertEquals(listOf("stopPreview", "startPreview(surface#1,2400x1080)"), port.calls)
+        assertEquals(PreviewStatus.Ready, statuses().last())
+
+        // Still held by the other app: no second automatic retry, whatever the callback.
+        coordinator.cameraError("Open camera failed: 2")
+        coordinator.cameraDisconnected()
+        assertTrue(scheduler.pending.isEmpty())
+        assertTrue(statuses().last() is PreviewStatus.CameraError)
+
+        // Once the camera has opened again, a later loss gets its one retry again.
+        coordinator.reopenCamera()
+        coordinator.cameraOpened()
+        coordinator.cameraDisconnected()
+        assertEquals(1, scheduler.pending.size)
+    }
+
+    @Test fun `Reopen camera cancels a pending automatic retry`() {
+        val coordinator = coordinator().attach()
+        coordinator.cameraError("Open camera failed: 1")
+        coordinator.reopenCamera()
+        coordinator.cameraError("Open camera failed: 1")
+        port.calls.clear()
+        scheduler.runAll()
+        assertEquals("the cancelled retry does nothing", emptyList<String>(), port.calls)
+        assertTrue(statuses().last() is PreviewStatus.CameraError)
+    }
+
+    @Test fun `a raw camera error reaches only the redacted log`() {
+        // A configured setting value inside the library's text, as the settings redaction would list it.
+        val redactingLog = DiagnosticsLog(clock = { 0L }, sink = { _, _, _ -> }, redaction = Redaction(listOf("video.example.test")))
+        val coordinator = coordinator(diagnostics = redactingLog).attach()
+        coordinator.cameraError("Create capture session failed: video.example.test refused")
+
+        assertEquals(PreviewCoordinator.CAMERA_FAILED, listener.previewStatuses.last().second)
+        assertEquals(PreviewStatus.CameraError(PreviewCoordinator.CAMERA_FAILED), statuses().last())
+        val entry = redactingLog.entries().last { it.outcome == DiagnosticOutcome.FAIL }
+        assertEquals(DiagnosticStep.CAMERA_OPEN, entry.step)
+        assertEquals("camera error: Create capture session failed: <redacted> refused", entry.redactedMessage)
+    }
+
+    @Test fun `release stops record, stream and preview before releasing, exactly once`() {
+        val coordinator = coordinator().attach()
+        coordinator.goLiveAndStream()
+        port.startRecord()
+        port.calls.clear()
+
+        coordinator.release(port)
+        assertEquals(listOf("stopRecord", "stopStream", "stopPreview", "release"), port.calls)
+        assertTrue(port.released)
+
+        port.calls.clear()
+        coordinator.release(port)
+        assertEquals("idempotent", emptyList<String>(), port.calls)
+
+        // Every later input is ignored: nothing touches the released stream.
+        val statusesBefore = listener.previewStatuses.size
+        coordinator.surfaceAvailable(surface, 0, 0)
+        coordinator.surfaceChanged(1080, 2400)
+        coordinator.displayRotationChanged(0)
+        coordinator.cameraError("Open camera failed: 1")
+        coordinator.cameraOpened()
+        coordinator.reopenCamera()
+        coordinator.streamStopped()
+        assertEquals(StreamGate.NotReady("The camera was released"), coordinator.goLive())
+        assertEquals(emptyList<String>(), port.calls)
+        assertEquals(statusesBefore, listener.previewStatuses.size)
+        assertTrue(scheduler.pending.isEmpty())
+    }
+
+    @Test fun `release while idle stops the preview first and cancels a pending automatic retry`() {
+        val coordinator = coordinator().attach()
+        coordinator.cameraError("Open camera failed: 1")
+        assertEquals(1, scheduler.pending.size)
+        port.calls.clear()
+
+        coordinator.release(port)
+        assertEquals(listOf("stopPreview", "release"), port.calls)
+        scheduler.runAll()
+        assertEquals(listOf("stopPreview", "release"), port.calls)
+    }
+
+    @Test fun `a failed release step is logged and the camera is still released`() {
+        val coordinator = coordinator().attach()
+        coordinator.goLiveAndStream()
+        port.stopStreamFailure = "encoder already released"
+        port.calls.clear()
+
+        coordinator.release(port)
+        assertEquals(listOf("stopStream", "stopPreview", "release"), port.calls)
+        val entry = log.entries().single { it.outcome == DiagnosticOutcome.FAIL }
+        assertEquals(DiagnosticStep.PUBLISHER_START, entry.step)
+        assertEquals("IllegalStateException", entry.errorClass)
+        assertEquals("release: stopStream failed: encoder already released", entry.redactedMessage)
     }
 
     @Test fun `an unsupported or unreadable sensor orientation fails closed and never prepares`() {

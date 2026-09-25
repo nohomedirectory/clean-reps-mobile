@@ -1,5 +1,6 @@
 package com.vaylith.cleanrepsmobile.media
 
+import com.vaylith.cleanrepsmobile.model.CaptureOrientation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -222,8 +223,9 @@ class PreviewStateMachineTest {
         rig.port.startPreviewFailure = "Camera in use by another app"
         rig.machine.geometryRequested(LANDSCAPE)
         rig.showSurface()
+        // M4c: the reason names the exception class; its message goes only to the diagnostics log.
         assertEquals(
-            listOf(PreviewStatus.Starting, PreviewStatus.CameraError("Camera preview failed: Camera in use by another app")),
+            listOf(PreviewStatus.Starting, PreviewStatus.CameraError("Camera preview failed (RuntimeException)")),
             rig.statuses,
         )
         assertEquals(0, rig.readyCount())
@@ -271,6 +273,53 @@ class PreviewStateMachineTest {
         assertTrue(rig.statuses.last() is PreviewStatus.CameraError)
         assertTrue(rig.port.streamStarts.isEmpty())
         assertNull(rig.machine.preparedGeometry)
+        rig.assertNoViolations()
+    }
+
+    @Test fun `unsupported sizes give the two exact owner messages`() {
+        val cameraSize = Rig()
+        cameraSize.port.prepareFailure = "Unsupported resolution: 1280x720"
+        cameraSize.machine.geometryRequested(PORTRAIT)
+        assertEquals(PreviewStatus.CameraError("This camera cannot provide 1280x720 video"), cameraSize.statuses.single())
+        assertEquals(PreviewStateMachine.UNSUPPORTED_CAMERA_SIZE, cameraSize.machine.cameraError)
+
+        val encoder = Rig()
+        encoder.port.encoderRefuses = { it.orientation == CaptureOrientation.PORTRAIT }
+        for (portrait in GEOMETRIES_90.filter { it.orientation == CaptureOrientation.PORTRAIT }) {
+            encoder.statuses.clear()
+            encoder.machine.geometryRequested(portrait)
+            assertEquals(PreviewStatus.CameraError("Portrait video not supported on this phone - use landscape"), encoder.statuses.single())
+        }
+        val landscapeRefused = Rig()
+        landscapeRefused.port.encoderRefuses = { true }
+        landscapeRefused.machine.geometryRequested(LANDSCAPE)
+        assertEquals(PreviewStatus.CameraError("This device cannot prepare the video encoder for landscape 1280x720"), landscapeRefused.statuses.single())
+        listOf(cameraSize, encoder, landscapeRefused).forEach { it.assertNoViolations() }
+    }
+
+    @Test fun `a successful prepare clears only a prepare failure`() {
+        val rig = Rig()
+        rig.port.encoderRefuses = { it.orientation == CaptureOrientation.PORTRAIT }
+        rig.showSurface(width = 1080, height = 2400)
+        assertEquals(StreamGate.NotReady(PreviewStateMachine.PORTRAIT_UNSUPPORTED), rig.machine.streamRequested(PORTRAIT))
+        assertFalse(rig.port.isOnPreview)
+
+        // Landscape remains available: the refusal belonged to portrait.
+        rig.machine.geometryRequested(LANDSCAPE)
+        assertNull(rig.machine.cameraError)
+        assertEquals(PreviewStatus.Ready, rig.statuses.last())
+        assertEquals(StreamGate.Ready(LANDSCAPE), rig.goLive(LANDSCAPE))
+        rig.stop()
+
+        // A camera error is not the encoder's: re-preparing for a rotation keeps it.
+        rig.machine.cameraError("Camera disconnected")
+        rig.port.encoderRefuses = { false }
+        rig.machine.geometryRequested(PORTRAIT)
+        assertEquals(PORTRAIT, rig.machine.preparedGeometry)
+        assertEquals("Camera disconnected", rig.machine.cameraError)
+        assertFalse(rig.port.isOnPreview)
+        rig.machine.retry()
+        assertEquals(PreviewStatus.Ready, rig.statuses.last())
         rig.assertNoViolations()
     }
 
