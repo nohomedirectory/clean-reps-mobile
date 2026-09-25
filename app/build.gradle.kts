@@ -9,6 +9,30 @@ fun secret(environmentVariable: String) =
         .orElse("")
         .get()
 
+// Build identity for diagnostics and the per-capture client-info record.
+// CLEAN_REPS_GIT_SHA wins; otherwise this checkout's own HEAD is asked. The
+// ceiling stops git from answering for an enclosing repository, and a build
+// outside git (for example a `git archive` export) records "unknown".
+val gitShaPattern = Regex("[0-9a-f]{7,40}")
+fun gitSha(): String {
+    val explicit = providers.environmentVariable("CLEAN_REPS_GIT_SHA").orNull?.trim().orEmpty()
+    if (explicit.isNotEmpty()) {
+        if (!gitShaPattern.matches(explicit)) {
+            throw GradleException("CLEAN_REPS_GIT_SHA must be 7-40 lowercase hexadecimal characters (value was not printed).")
+        }
+        return explicit
+    }
+    val head = runCatching {
+        providers.exec {
+            commandLine("git", "rev-parse", "--short", "HEAD")
+            workingDir = rootDir
+            rootDir.parentFile?.let { environment("GIT_CEILING_DIRECTORIES", it.absolutePath) }
+            isIgnoreExitValue = true
+        }.standardOutput.asText.get().trim()
+    }.getOrDefault("")
+    return head.takeIf(gitShaPattern::matches) ?: "unknown"
+}
+
 android {
     namespace = "com.vaylith.cleanrepsmobile"
     compileSdk = 35
@@ -16,8 +40,9 @@ android {
         applicationId = "com.vaylith.cleanrepsmobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0-rehearsal"
+        versionCode = 3
+        versionName = "0.3.0-rehearsal"
+        buildConfigField("String", "GIT_SHA", quoted(gitSha()))
         buildConfigField("String", "CHALLENGE_API_BASE_URL", quoted(secret("CHALLENGE_API_BASE_URL")))
         buildConfigField("String", "MEDIAMTX_SRT_HOST", quoted(secret("MEDIAMTX_SRT_HOST")))
         buildConfigField("String", "MEDIAMTX_SRT_PASSPHRASE", quoted(secret("MEDIAMTX_SRT_PASSPHRASE")))
@@ -62,4 +87,5 @@ dependencies {
     }
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }
