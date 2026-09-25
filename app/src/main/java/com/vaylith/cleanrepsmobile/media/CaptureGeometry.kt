@@ -1,0 +1,68 @@
+package com.vaylith.cleanrepsmobile.media
+
+import com.vaylith.cleanrepsmobile.model.CaptureOrientation
+
+/**
+ * Encoder geometry that keeps transmitted frames upright for the current display
+ * rotation. Pure; the caller reads the display rotation (`Surface.ROTATION_0` to
+ * `ROTATION_270`, i.e. 0..3) and the back camera's `SENSOR_ORIENTATION`.
+ *
+ * This models RootEncoder 2.7.0 as read from its bytecode, not yet from a device:
+ * `prepareVideo(PREPARE_WIDTH, PREPARE_HEIGHT, ..., rotationArg)` gives the
+ * encoder (height, width) for a rotation of 90 or 270 and (width, height)
+ * otherwise, and for a camera sensor mounted at 90 degrees the upright rotation
+ * is `CameraHelper.getCameraOrientation`: display 0 -> 90, 1 -> 0, 2 -> 270,
+ * 3 -> 180. A 270-degree sensor adds 180, which is unverified on hardware and
+ * flagged for diagnostics. Sensors at 0 or 180 degrees are refused.
+ *
+ * The constructor is private: every geometry comes from [forDisplayRotation].
+ */
+@ConsistentCopyVisibility
+data class CaptureGeometry private constructor(
+    val displayRotation: Int,
+    val sensorOrientationDeg: Int,
+    val rotationArg: Int,
+    val encodedWidth: Int,
+    val encodedHeight: Int,
+    val orientation: CaptureOrientation,
+    val sensorCompensationUnverified: Boolean,
+) {
+    val displayRotationDeg: Int get() = displayRotation * 90
+
+    /** Shown on the LIVE pill, e.g. `landscape 1280x720`. */
+    val label: String get() = "${orientation.wireValue} ${encodedWidth}x$encodedHeight"
+
+    companion object {
+        /** The only size ever passed to `prepareVideo`; the library itself swaps it for 90 and 270. */
+        const val PREPARE_WIDTH = 1280
+        const val PREPARE_HEIGHT = 720
+
+        private val SENSOR_90_ROTATION = intArrayOf(90, 0, 270, 180)
+
+        fun forDisplayRotation(displayRotation: Int, sensorOrientation: Int): Result<CaptureGeometry> {
+            if (displayRotation !in 0..3) {
+                return Result.failure(IllegalArgumentException("Unsupported display rotation ($displayRotation)"))
+            }
+            val sensorCompensation = when (sensorOrientation) {
+                90 -> 0
+                270 -> 180
+                else -> return Result.failure(
+                    IllegalArgumentException("Unsupported camera orientation ($sensorOrientation degrees)"),
+                )
+            }
+            val rotationArg = (SENSOR_90_ROTATION[displayRotation] + sensorCompensation) % 360
+            val portrait = rotationArg == 90 || rotationArg == 270
+            return Result.success(
+                CaptureGeometry(
+                    displayRotation = displayRotation,
+                    sensorOrientationDeg = sensorOrientation,
+                    rotationArg = rotationArg,
+                    encodedWidth = if (portrait) PREPARE_HEIGHT else PREPARE_WIDTH,
+                    encodedHeight = if (portrait) PREPARE_WIDTH else PREPARE_HEIGHT,
+                    orientation = if (portrait) CaptureOrientation.PORTRAIT else CaptureOrientation.LANDSCAPE,
+                    sensorCompensationUnverified = sensorOrientation == 270,
+                ),
+            )
+        }
+    }
+}
