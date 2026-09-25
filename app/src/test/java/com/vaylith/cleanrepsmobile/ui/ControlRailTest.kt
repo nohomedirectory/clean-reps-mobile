@@ -85,6 +85,8 @@ class ControlRailTest {
                 // OD-4: voice hints are on by default; Speak verdicts is off.
                 OverflowItem(OverflowAction.VOICE_HINTS, checked = true),
                 OverflowItem(OverflowAction.SPEAK_VERDICTS, checked = false),
+                // M8b: Diagnostics is always offered.
+                OverflowItem(OverflowAction.DIAGNOSTICS, checked = null),
             ),
             idle,
         )
@@ -95,8 +97,22 @@ class ControlRailTest {
             val overflow = ControlRailModel.from(state, configured, permission).overflow
             assertEquals("$state", state.practiceActive, overflow.any { it.action == OverflowAction.MANUAL_MARKER })
             assertEquals("$state", 1, overflow.count { it.action == OverflowAction.AUDIO_TEST })
+            assertEquals("$state", OverflowAction.DIAGNOSTICS, overflow.last().action)
         }
-        assertEquals(listOf("Audio test", "Voice hints", "Speak verdicts", "Save manual review marker"), OverflowAction.entries.map { it.label })
+        assertEquals(listOf("Audio test", "Voice hints", "Speak verdicts", "Save manual review marker", "Last session check", "Diagnostics"),
+            OverflowAction.entries.map { it.label })
+    }
+
+    @Test fun `Last session check is offered once a video has stopped`() {
+        assertTrue(ControlRailModel.from(AppState(), configured = true, permission = true).overflow.none { it.action == OverflowAction.LAST_SESSION_CHECK })
+        val stopped = AppState(readiness = CaptureReadiness.STOPPED, lastCaptureId = "capture-1")
+        assertEquals(
+            listOf(OverflowAction.AUDIO_TEST, OverflowAction.VOICE_HINTS, OverflowAction.SPEAK_VERDICTS, OverflowAction.LAST_SESSION_CHECK, OverflowAction.DIAGNOSTICS),
+            ControlRailModel.from(stopped, configured = true, permission = true).overflow.map { it.action },
+        )
+        // It stays while the next video runs, for the capture before it.
+        val live = stopped.copy(readiness = CaptureReadiness.LIVE, captureId = "capture-2")
+        assertTrue(ControlRailModel.from(live, configured = true, permission = true).overflow.any { it.action == OverflowAction.LAST_SESSION_CHECK })
     }
 
     @Test fun `the Restart video hint maps to the restart command`() {

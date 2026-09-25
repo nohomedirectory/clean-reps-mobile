@@ -3,10 +3,12 @@ package com.vaylith.cleanrepsmobile.session
 import com.vaylith.cleanrepsmobile.api.ChallengeApi
 import com.vaylith.cleanrepsmobile.api.ChallengeBackend
 import com.vaylith.cleanrepsmobile.api.ChallengeEvents
+import com.vaylith.cleanrepsmobile.api.FetchResult
 import com.vaylith.cleanrepsmobile.api.MobileVerdictEvent
 import com.vaylith.cleanrepsmobile.api.ServerHealth
 import com.vaylith.cleanrepsmobile.api.SessionCounts
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticStep
+import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsEntry
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
 import com.vaylith.cleanrepsmobile.diagnostics.StepMessages
 import com.vaylith.cleanrepsmobile.feedback.AthleteSignals
@@ -191,7 +193,8 @@ class SessionController(
         val capture = current.captureId
         if (capture != null) endCapture(capture, HealthDetail.LEFT_SCREEN)
         update {
-            copy(captureId = null, epoch = if (capture != null) epoch.next() else epoch, blockReady = false, practiceActive = false, banner = LEFT_SCREEN_BANNER)
+            copy(captureId = null, lastCaptureId = capture ?: lastCaptureId, epoch = if (capture != null) epoch.next() else epoch,
+                blockReady = false, practiceActive = false, banner = LEFT_SCREEN_BANNER)
         }
         feedback.onPracticeStopped(elapsedRealtime())
         scope.launch {
@@ -305,6 +308,18 @@ class SessionController(
 
     /** `GET /health` of this controller's server (C5), for the reachability chip; it never throws. */
     suspend fun serverHealth(): ServerHealth = backend.health()
+
+    /** C4 `GET /v1/captures/{id}/quality-report` for the Session check card; throws an ApiException on failure. */
+    suspend fun qualityReport(captureId: String): FetchResult<String> = backend.qualityReport(captureId)
+
+    /** C4 thumbnail [index] (0, 1 or 2) of that report, as JPEG bytes; the card decodes it in memory only. */
+    suspend fun thumbnail(captureId: String, index: Int): FetchResult<ByteArray> = backend.thumbnail(captureId, index)
+
+    /** The last DiagnosticsLog events, oldest first; every message was redacted when it was recorded. */
+    fun diagnosticEvents(): List<DiagnosticsEntry> = diagnostics.entries()
+
+    /** The Diagnostics sheet's Copy text: the same events, redacted again with the current settings. */
+    fun diagnosticsExport(): String = diagnostics.exportText()
 
     fun saveManualMarker() {
         val snapshot = current
@@ -424,7 +439,7 @@ class SessionController(
             val cameraFailed = readiness == CaptureReadiness.ERROR && current.preview is PreviewStatus.CameraError
             endCapture(capture, if (cameraFailed) HealthDetail.CAMERA_UNAVAILABLE else HealthDetail.STOPPED)
             // A later restart begins a different encoded time origin.
-            update { copy(captureId = null, epoch = epoch.next(), blockReady = false, practiceActive = false) }
+            update { copy(captureId = null, lastCaptureId = capture, epoch = epoch.next(), blockReady = false, practiceActive = false) }
             scope.launch { pausePracticeQuietly() }
         } else if (readiness == CaptureReadiness.LIVE) {
             reportHealth(capture, SourceHealth.HEALTHY, HealthDetail.LIVE)
@@ -836,6 +851,8 @@ data class AppState(
     /** Start practice has been tapped for the current block, so the next tap resumes it. */
     val practiceStarted: Boolean = false,
     val captureId: String? = null,
+    /** The capture of the last video that stopped; the Session check card shows its quality report. */
+    val lastCaptureId: String? = null,
     val captureStartedAtElapsedMs: Long? = null,
     val lastManualKickEventId: String? = null,
     val selection: BlockSelection = BlockSelection(),

@@ -23,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -120,6 +121,17 @@ fun CameraScreen(
     val banners = Banners.select(state, turned)
     val health = rememberServerHealth(controller, controller::serverHealth)
     var portraitHintDismissed by rememberSaveable { mutableStateOf(false) }
+    var diagnosticsOpen by rememberSaveable { mutableStateOf(false) }
+    var sessionCheckFor by rememberSaveable { mutableStateOf<String?>(null) }
+    var sessionCheckShownFor by rememberSaveable { mutableStateOf<String?>(null) }
+    // After Stop video: the Session check card opens once for the capture that just ended.
+    LaunchedEffect(state.lastCaptureId) {
+        val ended = state.lastCaptureId
+        if (ended != null && ended != sessionCheckShownFor) {
+            sessionCheckShownFor = ended
+            sessionCheckFor = ended
+        }
+    }
     val onBannerAction: (BannerAction) -> Unit = { action ->
         when (action) {
             BannerAction.REOPEN_CAMERA -> controller.reopenCamera()
@@ -132,6 +144,8 @@ fun CameraScreen(
             OverflowAction.VOICE_HINTS -> controller.toggleVoiceHints()
             OverflowAction.SPEAK_VERDICTS -> controller.toggleSpeakVerdicts()
             OverflowAction.MANUAL_MARKER -> controller.saveManualMarker()
+            OverflowAction.LAST_SESSION_CHECK -> sessionCheckFor = state.lastCaptureId
+            OverflowAction.DIAGNOSTICS -> diagnosticsOpen = true
         }
     }
     val onCommand: (RailCommand) -> Unit = { command ->
@@ -210,6 +224,19 @@ fun CameraScreen(
                 onToggleSpeakVerdicts = controller::toggleSpeakVerdicts,
                 onDismiss = { sheet = null },
             )
+        }
+        sessionCheckFor?.let { captureId ->
+            SessionCheckCard(
+                captureId = captureId,
+                landscape = landscape,
+                serverRelease = health?.release,
+                fetchReport = { controller.qualityReport(captureId) },
+                fetchThumbnail = { index -> controller.thumbnail(captureId, index) },
+                onDismiss = { sessionCheckFor = null },
+            )
+        }
+        if (diagnosticsOpen) {
+            DiagnosticsSheet(landscape, publisher, controller::diagnosticEvents, controller::diagnosticsExport, onDismiss = { diagnosticsOpen = false })
         }
     }
 }

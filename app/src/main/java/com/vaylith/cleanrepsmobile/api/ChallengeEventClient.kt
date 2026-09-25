@@ -292,6 +292,20 @@ internal class JsonFields private constructor(private val members: Map<String, S
     /** An object member, or null when absent, JSON null or not an object. */
     fun obj(name: String): JsonFields? = members[name]?.takeIf { it.startsWith('{') }?.let { parse(it) }
 
+    /** True when the member is present with the JSON value null. */
+    fun isNull(name: String): Boolean = members[name] == "null"
+
+    /** The raw JSON text of each element of an array member, or null when absent, JSON null, not an array or malformed. */
+    fun array(name: String): List<String>? = members[name]?.takeIf { it.startsWith('[') }?.let { JsonScanner(it).elements() }
+
+    /** An array of strings, or null when any element is not a string. */
+    fun strings(name: String): List<String>? = array(name)?.map { element ->
+        JsonScanner(element).let { scanner -> scanner.string()?.takeIf { scanner.atEnd() } } ?: return null
+    }
+
+    /** An array of objects, or null when any element is not an object. */
+    fun objects(name: String): List<JsonFields>? = array(name)?.map { element -> parse(element) ?: return null }
+
     companion object {
         private val INTEGER = Regex("-?(0|[1-9][0-9]*)")
         internal val NUMBER = Regex("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?")
@@ -371,6 +385,36 @@ private class JsonScanner(private val text: String) {
             }
         }
         return null
+    }
+
+    /** The raw text of each element of exactly one JSON array, or null when malformed. */
+    fun elements(): List<String>? {
+        skipWhitespace()
+        if (peek() != '[' || ++depth > MAX_DEPTH) return null
+        index++
+        val result = mutableListOf<String>()
+        skipWhitespace()
+        if (peek() == ']') {
+            index++
+            depth--
+            return result.takeIf { atEnd() }
+        }
+        while (true) {
+            skipWhitespace()
+            val start = index
+            if (!value()) return null
+            result += text.substring(start, index)
+            skipWhitespace()
+            when (peek()) {
+                ',' -> index++
+                ']' -> {
+                    index++
+                    depth--
+                    return result.takeIf { atEnd() }
+                }
+                else -> return null
+            }
+        }
     }
 
     private fun value(): Boolean = when (peek()) {

@@ -192,6 +192,28 @@ class CameraScreenContractTest {
         assertFalse("FilterChip(" in ui.getValue("ControlRail.kt"))
     }
 
+    @Test fun `the card and the Diagnostics sheet are wired, and no thumbnail or frame is ever written out`() {
+        listOf(
+            "OverflowAction.LAST_SESSION_CHECK -> sessionCheckFor = state.lastCaptureId",
+            "OverflowAction.DIAGNOSTICS -> diagnosticsOpen = true",
+            "fetchReport = { controller.qualityReport(captureId) }",
+            "fetchThumbnail = { index -> controller.thumbnail(captureId, index) }",
+            "DiagnosticsSheet(landscape, publisher, controller::diagnosticEvents, controller::diagnosticsExport",
+        ).forEach { assertTrue(it, it in screen) }
+        // Thumbnails and the Frame check image are decoded and shown in memory only.
+        listOf("SessionCheckCard.kt", "DiagnosticsSheet.kt").forEach { file -> assertEquals(file, emptyList<String>(), storageWrites(ui.getValue(file))) }
+        // Planted: each way of writing an image out is caught.
+        assertEquals(listOf("FileOutputStream", ".compress(", "MediaStore", "openFileOutput", "cacheDir", "getExternal"),
+            storageWrites(code("FileOutputStream(f); bmp.compress(JPEG, 90, out); MediaStore.Images; openFileOutput(n, 0); context.cacheDir; getExternalFilesDir(null)")))
+        // ui/ reads only BuildConfig's identity fields, never the private connection settings it also carries.
+        val buildFields = ui.values.flatMap { text -> Regex("""BuildConfig\.(\w+)""").findAll(text).map { it.groupValues[1] }.toList() }.toSet()
+        assertEquals(setOf("VERSION_NAME", "VERSION_CODE", "GIT_SHA"), buildFields)
+        // Frame check shows the publisher's whole frame, fitted, never the cropped preview.
+        val sheet = ui.getValue("DiagnosticsSheet.kt")
+        assertTrue("publisher.frameCheck {" in sheet)
+        assertTrue("contentScale = ContentScale.Fit" in sheet)
+    }
+
     @Test fun `the rotation banner comes from OrientationEventListener through the quantizer, only while the video runs`() {
         val banners = ui.getValue("Banners.kt")
         val listener = banners.substring(banners.indexOf("object : OrientationEventListener("))
@@ -311,6 +333,11 @@ class CameraScreenContractTest {
         val badge = text.indexOf("Text(StatusOverlayModel.PAUSED")
         return label.any { it.replace(" ", "") == "modifier=Modifier.weight(1f,fill=false)" } && badge > text.indexOf("Text(chip.text")
     }
+
+    /** Calls that would write an image or any file to storage. */
+    private fun storageWrites(text: String): List<String> =
+        listOf("FileOutputStream", ".compress(", "MediaStore", "openFileOutput", "cacheDir", "getExternal", "filesDir", "File(", "writeBytes(", "Environment.")
+            .filter { it in text }
 
     /** Every main Kotlin file: its name and raw source. */
     private val mainSources: List<Pair<String, String>> by lazy {

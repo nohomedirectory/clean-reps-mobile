@@ -70,6 +70,8 @@ enum class OverflowAction(val label: String) {
     VOICE_HINTS("Voice hints"),
     SPEAK_VERDICTS("Speak verdicts"),
     MANUAL_MARKER("Save manual review marker"),
+    LAST_SESSION_CHECK("Last session check"),
+    DIAGNOSTICS("Diagnostics"),
 }
 
 /** An overflow entry; [checked] is the on/off state of a toggle and null for an action. */
@@ -124,12 +126,17 @@ data class ControlRailModel(
             )
         }
 
-        /** OD-4 toggles show their state; the manual review marker is offered only while practice is active. */
+        /**
+         * OD-4 toggles show their state; the manual review marker is offered only while practice is
+         * active, and the last session check once a video has stopped. Diagnostics is always there.
+         */
         fun overflow(state: AppState): List<OverflowItem> = buildList {
             add(OverflowItem(OverflowAction.AUDIO_TEST, checked = null))
             add(OverflowItem(OverflowAction.VOICE_HINTS, checked = state.voiceHints))
             add(OverflowItem(OverflowAction.SPEAK_VERDICTS, checked = state.debugSpeakVerdicts))
             if (state.practiceActive) add(OverflowItem(OverflowAction.MANUAL_MARKER, checked = null))
+            if (state.lastCaptureId != null) add(OverflowItem(OverflowAction.LAST_SESSION_CHECK, checked = null))
+            add(OverflowItem(OverflowAction.DIAGNOSTICS, checked = null))
         }
 
         /** A disabled button never appears without its reason: the old screen ignored taps silently. */

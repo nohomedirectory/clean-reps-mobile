@@ -922,6 +922,40 @@ class SessionControllerTest {
         assertNull(controller.state.value.livePill)
     }
 
+    @Test fun `Stop video leaves the ended capture for the Session check card, and a new video keeps it until it ends`() {
+        val controller = live()
+        assertNull(controller.state.value.lastCaptureId)
+        controller.stopVideo()
+        settle()
+        assertEquals("capture-1", controller.state.value.lastCaptureId)
+        assertNull(controller.state.value.captureId)
+        // The next video: the card still refers to the capture before it until this one ends.
+        controller.startVideo()
+        settle()
+        publisher.live()
+        settle()
+        val second = controller.state.value.captureId!!
+        assertEquals("capture-1", controller.state.value.lastCaptureId)
+        controller.onLeftScreen()
+        settle()
+        assertEquals(second, controller.state.value.lastCaptureId)
+    }
+
+    @Test fun `the card and the Diagnostics sheet read through the controller`() = runBlocking {
+        val controller = live()
+        backend.reportAnswer = FetchResult.Found("""{"schemaVersion":1}""")
+        assertEquals(FetchResult.Found("""{"schemaVersion":1}"""), controller.qualityReport("capture-1"))
+        val thumb = controller.thumbnail("capture-1", 2) as FetchResult.Found
+        assertArrayEquals(byteArrayOf(2), thumb.value)
+        assertEquals(listOf("capture-1", "capture-1/thumb-2"), backend.reportReads)
+        // Diagnostics: the controller's own log, and its redacted export.
+        log.info(DiagnosticStep.PREVIEW_START, "probe event")
+        assertEquals(log.entries(), controller.diagnosticEvents())
+        assertTrue(controller.diagnosticEvents().last().redactedMessage == "probe event")
+        assertEquals(log.exportText(), controller.diagnosticsExport())
+        assertTrue("probe event" in controller.diagnosticsExport())
+    }
+
     @Test fun `session counts change only with the server snapshot, never with a verdict (planted)`() {
         val controller = live()
         controller.startPractice()
@@ -1052,8 +1086,11 @@ class SessionControllerTest {
 
         var healthAnswer = ServerHealth(reachable = true, release = null)
         override suspend fun health() = healthAnswer
-        override suspend fun qualityReport(captureId: String): FetchResult<String> = FetchResult.NotFound
-        override suspend fun thumbnail(captureId: String, index: Int): FetchResult<ByteArray> = FetchResult.NotFound
+        val reportReads = mutableListOf<String>()
+        var reportAnswer: FetchResult<String> = FetchResult.NotFound
+        override suspend fun qualityReport(captureId: String): FetchResult<String> = reportAnswer.also { reportReads += captureId }
+        override suspend fun thumbnail(captureId: String, index: Int): FetchResult<ByteArray> =
+            FetchResult.Found(byteArrayOf(index.toByte())).also { reportReads += "$captureId/thumb-$index" }
     }
 
     /** Behaves like MediaMtxSrtPublisher at its listener: start reports CONNECTING, stop reports STOPPED. */
