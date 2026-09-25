@@ -118,6 +118,8 @@ fun CameraScreen(
     // The rotation banner follows the geometry the running video was started with; OD-7 keeps the window locked to it.
     val turned = rememberTurnedBanner(if (state.videoRunning) publisher.preparedGeometry else null)
     val banners = Banners.select(state, turned)
+    val health = rememberServerHealth(controller, controller::serverHealth)
+    var portraitHintDismissed by rememberSaveable { mutableStateOf(false) }
     val onBannerAction: (BannerAction) -> Unit = { action ->
         when (action) {
             BannerAction.REOPEN_CAMERA -> controller.reopenCamera()
@@ -160,13 +162,21 @@ fun CameraScreen(
                     modifier = Modifier.previewSize(constraints),
                 )
             }
+            // In window pixels, over the preview and under the controls; mapped with the preview's own mode.
+            FramingBox(state, publisher.preparedGeometry, constraints.maxWidth, constraints.maxHeight, PreviewLayout.DEFAULT_MODE)
         }
         val content: @Composable (Modifier) -> Unit = { modifier ->
             Box(modifier) {
-                StatusColumn(state, banners, onBannerAction, Modifier.align(Alignment.TopStart).widthIn(max = 460.dp))
+                StatusColumn(state, banners, onBannerAction, StatusOverlayModel.from(state, health),
+                    Modifier.align(Alignment.TopStart).widthIn(max = 460.dp))
                 state.activeCue?.let { cue ->
                     Text(cue.text, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
                         modifier = Modifier.align(Alignment.Center).background(Scrim, RoundedCornerShape(16.dp)).padding(16.dp))
+                }
+                if (permission) {
+                    val portraitHint = PortraitHint.shown(publisher.preparedGeometry?.orientation, windowPortrait = !landscape, dismissed = portraitHintDismissed)
+                    FramingHints(state, portraitHint, onDismissPortraitHint = { portraitHintDismissed = true },
+                        Modifier.align(Alignment.BottomCenter).widthIn(max = 520.dp))
                 }
             }
         }
@@ -204,11 +214,15 @@ fun CameraScreen(
     }
 }
 
-/** The status pill, the status caption, the challenge total and the banners, top left over the preview. */
+/**
+ * The status pill, the analysis and server chips with the session counts, the status caption,
+ * the challenge total and the banners, top left over the preview.
+ */
 @Composable
-private fun StatusColumn(state: AppState, banners: List<Banner>, onBannerAction: (BannerAction) -> Unit, modifier: Modifier) {
+private fun StatusColumn(state: AppState, banners: List<Banner>, onBannerAction: (BannerAction) -> Unit, overlay: StatusOverlayModel, modifier: Modifier) {
     Column(modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         StatusPill(state)
+        StatusOverlay(overlay)
         Banners.caption(state, banners)?.let { caption ->
             Text(caption, style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.background(Scrim, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 6.dp))

@@ -52,6 +52,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -921,6 +922,31 @@ class SessionControllerTest {
         assertNull(controller.state.value.livePill)
     }
 
+    @Test fun `session counts change only with the server snapshot, never with a verdict (planted)`() {
+        val controller = live()
+        controller.startPractice()
+        settle()
+        events.onSessionCounts(SessionCounts(accepted = 1, rejected = 0, evidenceFailed = 0))
+        assertEquals("This session 1 accepted - 0 rejected", controller.state.value.sessionCountsText)
+        // Verdicts arrive on the same stream; none of them is counted on the phone.
+        events.onVerdict(verdict(VerdictClass.ACCEPTED, "accepted_extension"))
+        events.onVerdict(verdict(VerdictClass.REJECTED, "practice_no_extension"))
+        events.onVerdict(verdict(VerdictClass.UNJUDGEABLE, "evidence_failed"))
+        settle()
+        assertEquals(SessionCounts(accepted = 1, rejected = 0, evidenceFailed = 0), controller.state.value.sessionCounts)
+        events.onSessionCounts(SessionCounts(accepted = 2, rejected = 1, evidenceFailed = 1))
+        assertEquals("This session 2 accepted - 1 rejected", controller.state.value.sessionCountsText)
+    }
+
+    // runBlocking, not runTest: runTest reports any earlier test's leaked coroutine exception as its own failure.
+    @Test fun `serverHealth is the backend's GET health answer`() = runBlocking {
+        val controller = controller()
+        backend.healthAnswer = ServerHealth(reachable = true, release = "0123abc")
+        assertEquals(ServerHealth(reachable = true, release = "0123abc"), controller.serverHealth())
+        backend.healthAnswer = ServerHealth(reachable = false, release = null)
+        assertEquals(ServerHealth(reachable = false, release = null), controller.serverHealth())
+    }
+
     @Test fun `a settings change or a recreated Activity never sends a capture's lost twice`() {
         val first = live()
         backend.failNext("lost", apiFailure(DiagnosticStep.HEALTH, FailureKind.Unreachable))
@@ -1024,7 +1050,8 @@ class SessionControllerTest {
             return clientInfoAnswer
         }
 
-        override suspend fun health() = ServerHealth(reachable = true, release = null)
+        var healthAnswer = ServerHealth(reachable = true, release = null)
+        override suspend fun health() = healthAnswer
         override suspend fun qualityReport(captureId: String): FetchResult<String> = FetchResult.NotFound
         override suspend fun thumbnail(captureId: String, index: Int): FetchResult<ByteArray> = FetchResult.NotFound
     }

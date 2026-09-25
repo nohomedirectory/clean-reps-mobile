@@ -4,6 +4,7 @@ import com.vaylith.cleanrepsmobile.api.ChallengeApi
 import com.vaylith.cleanrepsmobile.api.ChallengeBackend
 import com.vaylith.cleanrepsmobile.api.ChallengeEvents
 import com.vaylith.cleanrepsmobile.api.MobileVerdictEvent
+import com.vaylith.cleanrepsmobile.api.ServerHealth
 import com.vaylith.cleanrepsmobile.api.SessionCounts
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticStep
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
@@ -301,6 +302,9 @@ class SessionController(
 
     /** "Reopen camera" after a camera error: one new attempt to open the camera and start the preview. */
     fun reopenCamera() = publisher.reopenCamera()
+
+    /** `GET /health` of this controller's server (C5), for the reachability chip; it never throws. */
+    suspend fun serverHealth(): ServerHealth = backend.health()
 
     fun saveManualMarker() {
         val snapshot = current

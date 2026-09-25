@@ -184,7 +184,10 @@ class CameraScreenContractTest {
             "onSelectDrill = controller::selectDrill",
         ).forEach { assertTrue(it, it in screen) }
         // The interim M7a panels are gone.
-        listOf("InterimControls", "StatusOverlay", "moreOpen", "FilterChip(").forEach { assertFalse(it, it in screen) }
+        listOf("InterimControls", "moreOpen", "FilterChip(").forEach { assertFalse(it, it in screen) }
+        // The interim M7a status panel (its own Reopen camera button) is gone; M8a's StatusOverlay of ui/StatusOverlay.kt takes a model.
+        assertFalse(Regex("""fun StatusOverlay\(\s*state: AppState""").containsMatchIn(screen + ui.values.joinToString("\n")))
+        assertFalse("onReopenCamera" in screen)
         // The drill picker's controls live in the sheet only.
         assertFalse("FilterChip(" in ui.getValue("ControlRail.kt"))
     }
@@ -196,6 +199,39 @@ class CameraScreenContractTest {
         assertTrue("PhysicalOrientation(Quadrant.forDisplayRotation(geometry.displayRotation))" in banners)
         assertTrue("rememberTurnedBanner(if (state.videoRunning) publisher.preparedGeometry else null)" in screen)
         assertTrue("val banners = Banners.select(state, turned)" in screen)
+    }
+
+    @Test fun `the C3 phone texts have one table, and the chip reads it`() {
+        val texts = setOf("Starting analysis...", "Finding you...", "Tracking you", "Step into the frame", "Head not visible - move the phone back or higher",
+            "Automatic analysis supports Teep only", "Analysis status unavailable")
+        val owners = mainSources.filter { (_, source) -> literals(source).any { it in texts } }.map { it.first }
+        assertEquals(listOf("LiveAnalysisModels.kt"), owners)
+        assertTrue("phoneText(" in ui.getValue("StatusOverlay.kt"))
+        // Planted: a second table is found; a text quoted in a comment is not.
+        assertEquals(listOf("Tracking you"), literals("val chip = \"Tracking you\" // \"Finding you...\"\n/* \"Step into the frame\" */").filter { it in texts })
+    }
+
+    @Test fun `the server is polled only while the screen is visible, for the controller in use`() {
+        val overlay = ui.getValue("StatusOverlay.kt")
+        assertTrue(Regex("""repeatOnLifecycle\(Lifecycle\.State\.STARTED\)\s*\{\s*pollServerHealth\(""").containsMatchIn(overlay))
+        assertTrue("rememberServerHealth(controller, controller::serverHealth)" in screen)
+        assertTrue("StatusOverlayModel.from(state, health)" in screen)
+    }
+
+    @Test fun `the session counts have one writer, the server snapshot`() {
+        val writers = mainSources.flatMap { (file, source) -> countWriters(code(source)).map { file to it } }
+        assertEquals(listOf("SessionController.kt" to "counts"), writers)
+        assertTrue(Regex("""onSessionCounts\s*=\s*\{\s*counts\s*->\s*update\s*\{\s*copy\(sessionCounts = counts\)""").containsMatchIn(code(mainSources.single { it.first == "SessionController.kt" }.second)))
+        // Planted: a local increment is found.
+        assertEquals(listOf("sessionCounts?.copy(accepted = sessionCounts.accepted + 1"),
+            countWriters(code("update { copy(sessionCounts = sessionCounts?.copy(accepted = sessionCounts.accepted + 1)) }")))
+    }
+
+    @Test fun `the framing box is drawn in window pixels with the preview's own mode`() {
+        assertTrue("FramingBox(state, publisher.preparedGeometry, constraints.maxWidth, constraints.maxHeight, PreviewLayout.DEFAULT_MODE)" in screen)
+        val guide = ui.getValue("FramingGuide.kt")
+        assertTrue("val shown = PreviewLayout.compute(mode, windowW, windowH, streamW, streamH)" in guide)
+        assertTrue("return PreviewLayout.regionOnScreen(shown, windowW, windowH, region)" in guide)
     }
 
     @Test fun `CameraScreen depends only on the publisher interface and the controller`() {
@@ -253,6 +289,41 @@ class CameraScreenContractTest {
         val secrets = calls(text, "OutlinedTextField").filter { args -> args.any { "srtPassphrase" in it || "publishPassword" in it } }
         val both = listOf("srtPassphrase", "publishPassword").all { name -> secrets.any { args -> args.any { name in it } } }
         return both && secrets.all { "visualTransformation = PasswordVisualTransformation()" in it } && "VisualTransformation.None" !in text
+    }
+
+    /** Every main Kotlin file: its name and raw source. */
+    private val mainSources: List<Pair<String, String>> by lazy {
+        mainDir.walkTopDown().filter { it.extension == "kt" }.map { it.name to it.readText() }.toList()
+    }
+
+    /** The right-hand sides of every assignment to `sessionCounts` in comment- and string-free [text]. */
+    private fun countWriters(text: String): List<String> =
+        Regex("""\bsessionCounts\s*=(?!=)\s*([^\n]*)""").findAll(text).map { it.groupValues[1].trimEnd(' ', ')', '}', ',') }.toList()
+
+    /** The contents of the string literals of Kotlin [source], without comments. */
+    private fun literals(source: String): List<String> {
+        val out = mutableListOf<String>()
+        var i = 0
+        while (i < source.length) {
+            when {
+                source.startsWith("//", i) -> i = source.indexOf('\n', i).let { if (it < 0) source.length else it }
+                source.startsWith("/*", i) -> i = source.indexOf("*/", i + 2).let { if (it < 0) source.length else it + 2 }
+                source.startsWith("\"\"\"", i) -> {
+                    val end = source.indexOf("\"\"\"", i + 3).let { if (it < 0) source.length else it }
+                    out += source.substring(i + 3, end)
+                    i = end + 3
+                }
+                source[i] == '"' || source[i] == '\'' -> {
+                    val quote = source[i]
+                    var j = i + 1
+                    while (j < source.length && source[j] != quote) j += if (source[j] == '\\') 2 else 1
+                    if (quote == '"') out += source.substring(i + 1, minOf(j, source.length))
+                    i = j + 1
+                }
+                else -> i++
+            }
+        }
+        return out
     }
 
     /** Settings that would cut a line of text short instead of letting it wrap. */
