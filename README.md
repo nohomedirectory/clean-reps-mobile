@@ -42,8 +42,8 @@ The stream path remains `million-kicks-camera`. An APK containing private settin
 ## Orientation
 
 - **While the video is off**, the screen follows how the phone is held (Android `sensor` orientation): portrait or landscape, including a flip between the two landscape sides. Whether upside-down portrait is offered depends on the phone. The preview follows the screen.
-- **At the Go live tap the orientation locks** and stays locked until the video stops. The video is prepared for the orientation the screen has at that moment and is always sent upright: portrait sends 720x1280, landscape sends 1280x720.
-- **Turning the phone while live never rotates the video.** Once the phone has been held in another orientation for about 1.5 s, a banner reads "Phone turned - video stays landscape. Stop video to switch." (or "... video stays portrait ..."). A phone lying flat never triggers it. To switch, tap **Stop video**, turn the phone, then **Go live** again.
+- **At the Go live (or Restart video) tap the orientation locks** and stays locked until the video stops. The video is prepared for the orientation the screen has at that moment and is always sent upright: portrait sends 720x1280, landscape sends 1280x720.
+- **Turning the phone while live never rotates the video.** Once the phone has been held in another orientation for about 1.5 s, a banner reads "Phone turned - video stays landscape. Stop video to switch." (or "... video stays portrait ..."). A phone lying flat never triggers it. To switch, tap **Stop video**, turn the phone, then tap **Restart video**.
 - Landscape works best for kicks. While the prepared video is portrait, a dismissible hint says "Landscape works best for kicks".
 
 ## The camera screen
@@ -51,7 +51,7 @@ The stream path remains `million-kicks-camera`. An APK containing private settin
 - **Full screen and dark.** The window runs edge to edge (also behind the camera cutout) with the system bars hidden; swipe to show them. The preview fills the screen and crops like a camera app; it is never stretched. On a 20:9 phone the preview hides about a tenth of the transmitted frame at the top and at the bottom in landscape (at the left and at the right in portrait); **Diagnostics > Frame check** shows the whole frame.
 - **Control rail** (right edge in landscape, bottom in portrait):
   - the **drill chip**, for example "Teep - Right - Hanging bag" (the default drill). It opens the drill part of the setup sheet and is disabled while practising;
-  - **one primary button**: Set up connection, Allow camera, Go live, Connecting..., Start practice, Pause, Resume, or Restart video (after the video stopped, or when analysis needs a new capture). A disabled button always shows a one-line reason under it. While live, the full analysis instruction appears under it too, for example "Head not visible - move the phone back or higher";
+  - **one primary button**: Set up connection, Allow camera, Go live, Connecting..., Start practice, Pause, Resume, or Restart video (after the video stopped, or when a reconnected video could not be linked to the session; while live, Restart video is also offered on the hint line when analysis needs a new capture). A disabled button always shows a one-line reason under it. While live, the full analysis instruction appears under it too, for example "Head not visible - move the phone back or higher";
   - **Stop video** while the video runs;
   - the **gear** for the connection settings, disabled while the video runs;
   - the **overflow menu**: Audio test, Voice hints (on by default), Speak verdicts, Save manual review marker (during practice), Last session check (after a video stopped), Diagnostics.
@@ -61,7 +61,7 @@ The stream path remains `million-kicks-camera`. An APK containing private settin
   - the analysis chip: "Analysis" and a short state such as "Tracking" or "Head cut off", with a "Paused" badge while practice is paused;
   - the server chip: "Server reachable - release" and the server's release, or "Server unreachable", checked every 15 s while the screen is visible;
   - "This session N accepted - M rejected", counted by the server;
-  - banners: the phone-turned banner, "Video stopped because Clean Reps left the screen. Tap Go live.", camera and connection errors that name the failed step (with Reopen camera while the video is off, or Stop video while it runs), and "Couldn't judge that one - keep head and feet in view".
+  - banners: the phone-turned banner, "Video stopped because Clean Reps left the screen. Tap Restart video.", camera and connection errors that name the failed step (with Reopen camera while the video is off, or Stop video while it runs), and "Couldn't judge that one - keep head and feet in view".
 - **Framing guide**: the hint "Head and feet on screen - about 3-4 m away - phone at waist height", and, while live with a current analysis status, the analyser's area on the cropped preview, labelled "Stay in this area". Both fade out during practice.
 - **Session check** card, after Stop video: what the server saw for that capture. It shows the overall verdict and the checks (Video geometry, Upright, Athlete detected, Head and feet in frame; PASS, WARN or FAIL) with the analyser's advice, how often the body, the head and the feet were visible, judged versus unavailable kicks, the app and server versions, and up to three analysed frames. It waits up to 20 s for the final report; "No analysis ran for this capture" means the server has no report. Reopen it from **Last session check**.
 - **Diagnostics**: build identity and server release, the camera's sensor orientation and prepared geometry, the last 100 events (redacted) with Copy, and **Frame check**, which shows the whole transmitted frame at the encoder size, including what the preview crops, so you can confirm it is upright and undistorted.
@@ -76,7 +76,7 @@ The stream path remains `million-kicks-camera`. An APK containing private settin
 6. Kick. An accepted kick plays a high double beep and a rejected kick one low tone. A kick that could not be judged, or waits for review, makes no sound and shows "Couldn't judge that one - keep head and feet in view".
 7. Tap **Pause** before resting; the video continues. **Resume** continues the same block. Change the drill (drill chip) only while practice is paused or not started; a new drill starts a new block.
 8. Tap **Stop video** when done and read the Session check card. After a dropped connection the video reconnects with a new source epoch; check the framing before resuming.
-9. Keep the app in the foreground: leaving it stops the video ("Video stopped because Clean Reps left the screen. Tap Go live."). Use a separate device for chat and broadcast controls. The screen stays awake while the app is open.
+9. Keep the app in the foreground: leaving it stops the video ("Video stopped because Clean Reps left the screen. Tap Restart video."). Use a separate device for chat and broadcast controls. The screen stays awake while the app is open.
 
 This build intentionally marks every capture as `rehearsal`; it contributes zero official credit. Official-live enrollment and trusted platform-delivery attestation require the verified server workflow. Drill metadata and target height do not establish automatic judging readiness or add cadence, reset, hold or visibility requirements.
 

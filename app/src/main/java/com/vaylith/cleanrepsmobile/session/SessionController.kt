@@ -809,7 +809,8 @@ class SessionController(
         /** The FeedbackPolicy tick period while the video is LIVE. */
         const val TICK_MS = 250L
 
-        const val LEFT_SCREEN_BANNER = "Video stopped because Clean Reps left the screen. Tap Go live."
+        /** After a stop the primary button reads Restart video (PrimaryActionState), so the banner names it. */
+        const val LEFT_SCREEN_BANNER = "Video stopped because Clean Reps left the screen. Tap Restart video."
     }
 }
 

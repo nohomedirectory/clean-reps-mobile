@@ -47,7 +47,12 @@ class BannersTest {
 
     @Test fun `the controller's left-screen and unjudgeable banners`() {
         val left = Banners.select(AppState(readiness = CaptureReadiness.STOPPED, banner = SessionController.LEFT_SCREEN_BANNER), null).single()
-        assertEquals(Banner(BannerKind.LEFT_SCREEN, "Video stopped because Clean Reps left the screen. Tap Go live."), left)
+        assertEquals(Banner(BannerKind.LEFT_SCREEN, "Video stopped because Clean Reps left the screen. Tap Restart video."), left)
+        // The banner names the button the screen actually offers after that stop.
+        val offered = ControlRailModel.from(AppState(readiness = CaptureReadiness.STOPPED, banner = SessionController.LEFT_SCREEN_BANNER),
+            configured = true, permission = true).primary
+        assertEquals(PrimaryAction.RESTART_VIDEO, offered.action)
+        assertTrue(left.text.endsWith("Tap ${offered.action.label}."))
         val unjudged = Banners.select(AppState(readiness = CaptureReadiness.LIVE, feedbackBanner = FeedbackPolicy.UNJUDGED_BANNER), null).single()
         assertEquals(Banner(BannerKind.UNJUDGED, "Couldn't judge that one - keep head and feet in view"), unjudged)
     }

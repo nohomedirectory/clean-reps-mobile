@@ -171,7 +171,7 @@ class SessionControllerTest {
         assertTrue(store.pending().isEmpty())
         assertEquals(listOf("stop"), publisher.calls.filter { it == "stop" })
         assertEquals(SessionController.LEFT_SCREEN_BANNER, controller.state.value.banner)
-        assertEquals("Video stopped because Clean Reps left the screen. Tap Go live.", controller.state.value.banner)
+        assertEquals("Video stopped because Clean Reps left the screen. Tap Restart video.", controller.state.value.banner)
     }
 
     @Test fun `Stop video persists lost, sends it with three attempts and backoff, and keeps it pending after the third`() {
