@@ -8,7 +8,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
@@ -25,8 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.vaylith.cleanrepsmobile.session.AppState
 
 /** What a tap on the primary button does; the screen maps each command to one controller or host call. */
@@ -103,6 +105,56 @@ data class ControlRailModel(
     }
 }
 
+/**
+ * The size of the rail and the line budget of its reason and hint lines. The lines wrap and are
+ * never cut; the budget keeps every string short enough to take at most [MAX_LINES] lines at the
+ * default font scale, so the rail stays compact. [lines] estimates the wrap conservatively:
+ * [AVERAGE_CHAR_EM] is wider than Roboto's average advance for English text.
+ */
+object RailText {
+    /** The landscape rail's content width, and the narrowest width the lines get (see [portraitWidthDp]). */
+    const val LANDSCAPE_WIDTH_DP = 300
+
+    /** The scrim's inner padding. */
+    const val PADDING_DP = 12
+
+    /** The camera screen's margin inside the `safeDrawing` insets. */
+    const val EDGE_DP = 8
+    const val SIZE_SP = 18
+    const val MAX_LINES = 3
+    private const val AVERAGE_CHAR_EM = 0.6
+
+    /** The width of the lines in the portrait band, which spans the window. */
+    fun portraitWidthDp(windowWidthDp: Int): Int = windowWidthDp - 2 * EDGE_DP - 2 * PADDING_DP
+
+    /** Characters that surely fit on one line of [widthDp] at [SIZE_SP] sp. */
+    fun charsPerLine(widthDp: Int): Int = (widthDp / (SIZE_SP * AVERAGE_CHAR_EM)).toInt()
+
+    /** [text] wrapped greedily at word boundaries; a word longer than a line stays one over-long line. */
+    fun lines(text: String, widthDp: Int = LANDSCAPE_WIDTH_DP): List<String> {
+        val budget = charsPerLine(widthDp)
+        val lines = mutableListOf<String>()
+        var line = ""
+        for (word in text.trim().split(Regex("""\s+"""))) {
+            line = when {
+                line.isEmpty() -> word
+                line.length + 1 + word.length <= budget -> "$line $word"
+                else -> {
+                    lines += line
+                    word
+                }
+            }
+        }
+        if (line.isNotEmpty()) lines += line
+        return lines
+    }
+
+    fun fits(text: String, widthDp: Int = LANDSCAPE_WIDTH_DP): Boolean {
+        val wrapped = lines(text, widthDp)
+        return wrapped.size <= MAX_LINES && wrapped.all { it.length <= charsPerLine(widthDp) }
+    }
+}
+
 private val RailScrim = Color.Black.copy(alpha = 0.55f)
 
 /**
@@ -121,49 +173,61 @@ fun ControlRail(
     onMore: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val scrim = modifier.background(RailScrim, RoundedCornerShape(20.dp)).padding(12.dp)
+    val scrim = modifier.background(RailScrim, RoundedCornerShape(20.dp)).padding(RailText.PADDING_DP.dp)
     if (landscape) {
-        Column(scrim.width(260.dp), verticalArrangement = Arrangement.spacedBy(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        // Scrolls, so a wrapped reason, the hint, Restart video and Stop video never overflow a short landscape window.
+        Column(
+            scrim.width(RailText.LANDSCAPE_WIDTH_DP.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 SettingsButton(model.settingsEnabled, onSettings)
                 MoreButton(onMore)
             }
-            PrimaryBlock(model, onCommand, Modifier.fillMaxWidth())
+            PrimaryButton(model, onCommand, Modifier.fillMaxWidth())
+            RailLines(model, onCommand)
             if (model.stopVideoShown) StopVideoButton(model.stopVideoEnabled, onStopVideo, Modifier.fillMaxWidth())
         }
     } else {
-        Column(scrim.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(scrim.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SettingsButton(model.settingsEnabled, onSettings)
-                PrimaryBlock(model, onCommand, Modifier.weight(1f))
+                PrimaryButton(model, onCommand, Modifier.weight(1f))
                 MoreButton(onMore)
             }
+            // Below the button row, the lines get the band's full width rather than the button's share.
+            RailLines(model, onCommand)
             if (model.stopVideoShown) StopVideoButton(model.stopVideoEnabled, onStopVideo, Modifier.fillMaxWidth())
         }
     }
 }
 
 @Composable
-private fun PrimaryBlock(model: ControlRailModel, onCommand: (RailCommand) -> Unit, modifier: Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Button(
-            onClick = { onCommand(model.primary.action.command()) },
-            enabled = model.primary.enabled,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp),
-        ) {
-            Text(model.primary.action.label, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        }
-        model.reason?.let { RailLine(it) }
-        model.hint?.let { RailLine(it) }
-        if (model.hintAction != null) {
-            TextButton(onClick = { onCommand(model.hintAction.command()) }) { Text(model.hintAction.label) }
-        }
+private fun PrimaryButton(model: ControlRailModel, onCommand: (RailCommand) -> Unit, modifier: Modifier) {
+    Button(
+        onClick = { onCommand(model.primary.action.command()) },
+        enabled = model.primary.enabled,
+        modifier = modifier.heightIn(min = 64.dp),
+    ) {
+        Text(model.primary.action.label, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
     }
 }
 
+/** The reason under a disabled button, the live-analysis hint, and the hint's one-tap action. */
+@Composable
+private fun RailLines(model: ControlRailModel, onCommand: (RailCommand) -> Unit) {
+    model.reason?.let { RailLine(it) }
+    model.hint?.let { RailLine(it) }
+    if (model.hintAction != null) {
+        TextButton(onClick = { onCommand(model.hintAction.command()) }) { Text(model.hintAction.label) }
+    }
+}
+
+/** Wraps onto as many lines as it needs and is never cut; [RailText] keeps every string within its budget. */
 @Composable
 private fun RailLine(text: String) {
-    Text(text, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Text(text, style = MaterialTheme.typography.bodyLarge, fontSize = RailText.SIZE_SP.sp, textAlign = TextAlign.Center)
 }
 
 @Composable

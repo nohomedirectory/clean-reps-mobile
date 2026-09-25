@@ -19,6 +19,8 @@ import com.pedro.library.view.RenderErrorCallback
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticStep
 import com.vaylith.cleanrepsmobile.diagnostics.DiagnosticsLog
 import com.vaylith.cleanrepsmobile.model.SourceEpoch
+import com.vaylith.cleanrepsmobile.ui.PreviewLayout
+import com.vaylith.cleanrepsmobile.ui.PreviewMode
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -63,6 +65,12 @@ interface CanonicalSourcePublisher {
      * to the listener: the caller owns the end of the capture. Main thread.
      */
     fun release()
+}
+
+/** RootEncoder's draw mode for a preview mode. No preview mode maps to `AspectRatioMode.NONE`, the stretch. */
+internal fun PreviewMode.glAspectRatioMode(): AspectRatioMode = when (this) {
+    PreviewMode.FILL -> AspectRatioMode.Fill
+    PreviewMode.FIT -> AspectRatioMode.Adjust
 }
 
 sealed interface PublisherResult {
@@ -133,8 +141,9 @@ class MediaMtxSrtPublisher(
     private val diagnostics: DiagnosticsLog? = null,
 ) : CanonicalSourcePublisher, ConnectChecker {
     private val stream = SrtStream(context, this).apply {
-        // Camera-app-like preview: scale uniformly to cover the view and centre-crop, never stretch.
-        getGlInterface().setAspectRatioMode(AspectRatioMode.Fill)
+        // OD-3, the same constant that sizes the preview view: Fill covers the view and centre-crops
+        // like a camera app (the default); Adjust shows the whole frame. Neither stretches.
+        getGlInterface().setAspectRatioMode(PreviewLayout.DEFAULT_MODE.glAspectRatioMode())
     }
     private val port = SrtStreamEncoderPort(stream)
     private val mainThread = Handler(Looper.getMainLooper())

@@ -4,6 +4,7 @@ import com.vaylith.cleanrepsmobile.model.CaptureReadiness
 import com.vaylith.cleanrepsmobile.model.LiveAnalysisState
 import com.vaylith.cleanrepsmobile.model.LiveAnalysisStatus
 import com.vaylith.cleanrepsmobile.model.LiveBlockedReason
+import com.vaylith.cleanrepsmobile.model.phoneText
 import com.vaylith.cleanrepsmobile.session.AppState
 import org.junit.Assert.*
 import org.junit.Test
@@ -84,6 +85,48 @@ class ControlRailTest {
         assertEquals(PrimaryAction.RESTART_VIDEO, model.hintAction)
         assertEquals(RailCommand.RESTART_VIDEO, model.hintAction!!.command())
         assertNotNull(model.hint)
+    }
+
+    /** Every line the rail can show under the button: the table's reasons and hints, and every live-analysis text. */
+    private fun railLines(): Set<String> = buildSet {
+        for ((state, configured, permission) in table) {
+            val model = ControlRailModel.from(state, configured, permission)
+            model.reason?.let(::add)
+            model.hint?.let(::add)
+        }
+        for (state in LiveAnalysisState.entries) {
+            add(phoneText(state))
+            LiveBlockedReason.entries.forEach { add(phoneText(state, it)) }
+        }
+        addAll(listOf(PrimaryActionState.WAITING_FOR_SERVER, PrimaryActionState.CONNECTING_REASON,
+            PrimaryActionState.RECONNECTING_REASON, PrimaryActionState.ATTACHING_REASON))
+    }
+
+    @Test fun `every reason and hint fits the rail's line budget in both orientations`() {
+        // The lines are narrowest in the landscape rail; the portrait band is wider on any phone of 360 dp or more.
+        assertTrue(RailText.portraitWidthDp(360) >= RailText.LANDSCAPE_WIDTH_DP)
+        assertEquals(27, RailText.charsPerLine(RailText.LANDSCAPE_WIDTH_DP))
+        assertEquals(3, RailText.MAX_LINES)
+        val lines = railLines()
+        // The longest strings, which the old one-line rail cut to "Head not visible - move the ph...".
+        assertTrue("Another Clean Reps session is still open - tap Restart video" in lines)
+        assertTrue("Head not visible - move the phone back or higher" in lines)
+        lines.forEach { line ->
+            val wrapped = RailText.lines(line)
+            assertTrue("$line -> $wrapped", RailText.fits(line))
+            assertEquals(line, wrapped.joinToString(" "))
+        }
+    }
+
+    @Test fun `the line budget refuses a line that would not fit (planted)`() {
+        assertEquals(listOf("Head not visible - move the", "phone back or higher"), RailText.lines("Head not visible - move the phone back or higher"))
+        assertEquals(listOf("Another Clean Reps session", "is still open - tap Restart", "video"),
+            RailText.lines("Another Clean Reps session is still open - tap Restart video"))
+        // Four lines, and a word no line can hold.
+        assertFalse(RailText.fits("Another Clean Reps session is still open - tap Restart video, then wait for the server"))
+        assertFalse(RailText.fits("A" + "x".repeat(30)))
+        // In a 160 dp column the same hint would need five lines.
+        assertFalse(RailText.fits("Another Clean Reps session is still open - tap Restart video", widthDp = 160))
     }
 
     @Test fun `a disabled button without a one-line reason is refused (planted)`() {

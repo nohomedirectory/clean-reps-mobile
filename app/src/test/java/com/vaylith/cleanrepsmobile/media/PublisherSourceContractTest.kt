@@ -2,7 +2,10 @@ package com.vaylith.cleanrepsmobile.media
 
 import android.graphics.Bitmap
 import android.view.SurfaceView
+import com.pedro.encoder.utils.gl.AspectRatioMode
 import com.vaylith.cleanrepsmobile.model.SourceEpoch
+import com.vaylith.cleanrepsmobile.ui.PreviewLayout
+import com.vaylith.cleanrepsmobile.ui.PreviewMode
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
@@ -42,7 +45,13 @@ class PublisherSourceContractTest {
 
     @Test fun `the preview is filled and never stretched`() {
         media.forEach { (file, text) -> assertFalse(file, "AspectRatioMode.NONE" in text) }
-        assertTrue("setAspectRatioMode(AspectRatioMode.Fill)" in publisher)
+        // The draw mode comes from the one OD-3 constant that also sizes the preview view, and it is Fill.
+        val modes = calls(publisher, "setAspectRatioMode")
+        assertEquals(listOf(listOf("PreviewLayout.DEFAULT_MODE.glAspectRatioMode()")), modes)
+        assertEquals(AspectRatioMode.Fill, PreviewLayout.DEFAULT_MODE.glAspectRatioMode())
+        assertEquals(AspectRatioMode.Fill, PreviewMode.FILL.glAspectRatioMode())
+        assertEquals(AspectRatioMode.Adjust, PreviewMode.FIT.glAspectRatioMode())
+        assertTrue(PreviewMode.entries.none { it.glAspectRatioMode() == AspectRatioMode.NONE })
     }
 
     @Test fun `video is prepared at 1280x720 with the upright rotation argument`() {

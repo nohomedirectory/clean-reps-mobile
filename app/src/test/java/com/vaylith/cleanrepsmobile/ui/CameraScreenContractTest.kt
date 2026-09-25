@@ -88,7 +88,15 @@ class CameraScreenContractTest {
 
     @Test fun `the preview fills the window and is never stretched`() {
         val view = calls(screen, "AndroidView").single()
-        assertTrue(view.toString(), "modifier = Modifier.fillMaxSize()" in view)
+        // The view takes previewSurface's rectangle for the default mode, in exact pixels.
+        assertTrue(view.toString(), "modifier = Modifier.previewSize(constraints)" in view)
+        val sizing = screen.substring(screen.indexOf("private fun Modifier.previewSize("))
+        assertTrue("val surface = previewSurface(window.maxWidth, window.maxHeight)" in sizing.substringBefore("\n}"))
+        // In the default FILL mode that rectangle is the whole window, for any window shape.
+        assertEquals(PreviewMode.FILL, PreviewLayout.DEFAULT_MODE)
+        listOf(2400 to 1080, 1080 to 2400, 1920 to 1080, 1080 to 1920, 2340 to 1080, 1000 to 1000, 2401 to 1081).forEach { (w, h) ->
+            assertEquals("${w}x$h", PixelRect(0, 0, w, h), previewSurface(w, h))
+        }
         val factory = view.single { it.startsWith("factory =") }
         assertTrue(factory, "setZOrderMediaOverlay(false)" in factory && "publisher.attachPreview(" in factory)
         assertEquals("onRelease = { publisher.releasePreview() }", view.single { it.startsWith("onRelease =") })
@@ -96,6 +104,40 @@ class CameraScreenContractTest {
         ui.forEach { (file, text) -> assertEquals(file, emptyList<String>(), stretches(text)) }
         // Nowhere in the app: AspectRatioMode.NONE stretches the stream to the surface.
         mainDir.walkTopDown().filter { it.extension == "kt" }.forEach { assertFalse(it.name, "AspectRatioMode.NONE" in code(it.readText())) }
+    }
+
+    @Test fun `the OD-3 constant switches both the preview view and the publisher's draw mode`() {
+        // FIT gives the view a stream-aspect box at the top left, which the publisher fills with Adjust.
+        assertEquals(PixelRect(0, 0, 1920, 1080), previewSurface(2400, 1080, PreviewMode.FIT))
+        assertEquals(PixelRect(0, 0, 1080, 1920), previewSurface(1080, 2400, PreviewMode.FIT))
+        assertEquals(PixelRect(0, 0, 1920, 1080), previewSurface(1920, 1080, PreviewMode.FIT))
+        listOf(2400 to 1080, 1080 to 2400).forEach { (w, h) ->
+            assertEquals(previewSurface(w, h, PreviewLayout.DEFAULT_MODE), previewSurface(w, h))
+        }
+        val signature = screen.substring(screen.indexOf("internal fun previewSurface("), screen.indexOf("): PixelRect"))
+        assertTrue(signature, "mode: PreviewMode = PreviewLayout.DEFAULT_MODE" in signature)
+        // Nothing else picks a mode: the only mode literals are M3c's constant and the publisher's mapping.
+        val mains = mainDir.walkTopDown().filter { it.extension == "kt" }.map { it.name to code(it.readText()) }.toList()
+        val literals = mains.filter { (_, text) -> Regex("""PreviewMode\.(FILL|FIT)\b""").containsMatchIn(text) }.map { it.first }
+        assertEquals(listOf("CanonicalSourcePublisher.kt", "PreviewLayout.kt"), literals.sorted())
+        assertEquals(listOf("CameraScreen.kt", "CanonicalSourcePublisher.kt"),
+            mains.filter { (_, text) -> "PreviewLayout.DEFAULT_MODE" in text }.map { it.first }.sorted())
+        val publisher = mains.single { it.first == "CanonicalSourcePublisher.kt" }.second
+        assertTrue("setAspectRatioMode(PreviewLayout.DEFAULT_MODE.glAspectRatioMode())" in publisher)
+    }
+
+    @Test fun `the rail's reason and hint lines wrap and are never cut, and the landscape rail scrolls`() {
+        val rail = ui.getValue("ControlRail.kt")
+        assertEquals(emptyList<String>(), cuts(rail))
+        val railLine = rail.substring(rail.indexOf("private fun RailLine("))
+        assertTrue("fontSize = RailText.SIZE_SP.sp" in railLine.substringBefore("\n}"))
+        val landscape = calls(rail, "Column").map { it.first() }.single { "RailText.LANDSCAPE_WIDTH_DP" in it }
+        assertTrue(landscape, "verticalScroll(rememberScrollState())" in landscape)
+        // The margin the portrait width budget assumes is the screen's own.
+        assertTrue(Regex("""windowInsetsPadding\(\s*WindowInsets\.safeDrawing\s*\)\.padding\(RailText\.EDGE_DP\.dp\)""").containsMatchIn(screen))
+        // Planted: the defect the verifier found.
+        assertEquals(listOf("maxLines", "TextOverflow.Ellipsis"),
+            cuts(code("Text(text, style = style, maxLines = 1, overflow = TextOverflow.Ellipsis)")))
     }
 
     @Test fun `CameraScreen depends only on the publisher interface and the controller`() {
@@ -147,6 +189,10 @@ class CameraScreenContractTest {
     private fun stretches(text: String): List<String> =
         listOf("aspectRatio(", "ContentScale.FillBounds", "ContentScale.Crop", "scaleX", "scaleY", "setScaleX(", "setScaleY(", "AspectRatioMode")
             .filter { it in text }
+
+    /** Settings that would cut a line of text short instead of letting it wrap. */
+    private fun cuts(text: String): List<String> =
+        listOf("maxLines", "TextOverflow.Ellipsis", "TextOverflow.Clip", "softWrap = false").filter { it in text }
 
     private fun xml(text: String): Document =
         DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }.newDocumentBuilder().parse(InputSource(StringReader(text)))
