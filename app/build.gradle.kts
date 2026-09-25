@@ -59,6 +59,10 @@ android {
         // target implicit can fail Gradle's JVM target validation.
         jvmTarget = JavaVersion.VERSION_17.toString()
     }
+    testOptions {
+        // Robolectric renders CameraScreen from the merged manifest and resources.
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 fun quoted(value: String) = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
@@ -88,4 +92,9 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Test-only: neither reaches the APK. There is deliberately no
+    // ui-test-manifest: as debugImplementation it would add an activity to the
+    // debug APK, so the smoke test registers its host activity with Robolectric.
+    testImplementation(libs.robolectric)
+    testImplementation(libs.compose.ui.test.junit4)
 }

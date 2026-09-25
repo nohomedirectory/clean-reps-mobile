@@ -12,6 +12,10 @@ rootEncoder = "2.7.0"
 # Test-only. Matches the kotlinx-coroutines version the app runtime already
 # resolves (RootEncoder 2.7.0 requests 1.10.2; AndroidX's 1.7.3 is upgraded).
 coroutines = "1.10.2"
+# Test-only, for the one Robolectric smoke render of CameraScreen. Robolectric's
+# compatibility table runs SDK 35 on Java 17 (the host's only JDK) from 4.15;
+# its SDK 36 needs Java 21, so the test pins SDK 35.
+robolectric = "4.16.1"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version = "1.15.0" }
@@ -33,6 +37,9 @@ camerax-view = { module = "androidx.camera:camera-view", version.ref = "camerax"
 root-encoder = { module = "com.github.pedroSG94.RootEncoder:library", version.ref = "rootEncoder" }
 junit = { module = "junit:junit", version = "4.13.2" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+# Version from the compose BOM.
+compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
