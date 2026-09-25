@@ -70,8 +70,8 @@ class PublisherSourceContractTest {
         }
         media.forEach { (file, text) -> assertFalse(file, "PublisherStatus.PREVIEW_READY" in text) }
         assertFalse("previewAttached" in publisher)
-        // The constant stays until M6a deletes it with MainActivity's exhaustive `when`.
-        assertTrue(Regex("""\bPREVIEW_READY\s*,""").containsMatchIn(publisher))
+        // M6a deleted the constant with MainActivity's exhaustive `when`: a preview status cannot be a transport status.
+        assertFalse(Regex("""\bPREVIEW_READY\b""").containsMatchIn(body(publisher, "enum class PublisherStatus")))
     }
 
     @Test fun `every publisher member used outside media is declared on the interface`() {

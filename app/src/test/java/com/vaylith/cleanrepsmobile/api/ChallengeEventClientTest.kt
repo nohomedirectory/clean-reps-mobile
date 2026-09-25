@@ -9,7 +9,6 @@ import com.vaylith.cleanrepsmobile.model.AthleteCue
 import com.vaylith.cleanrepsmobile.model.LiveAnalysisState
 import com.vaylith.cleanrepsmobile.model.LiveAnalysisStatus
 import com.vaylith.cleanrepsmobile.model.VerdictClass
-import com.vaylith.cleanrepsmobile.model.VerdictTone
 import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -57,7 +56,6 @@ class ChallengeEventClientTest {
     private val scope = CoroutineScope(SupervisorJob())
 
     private val verdicts = LinkedBlockingQueue<MobileVerdictEvent>()
-    private val classes = LinkedBlockingQueue<Pair<VerdictClass, String>>()
     private val statuses = LinkedBlockingQueue<Optional<LiveAnalysisStatus>>()
     private val counts = LinkedBlockingQueue<SessionCounts>()
     private val totals = LinkedBlockingQueue<Long>()
@@ -95,13 +93,11 @@ class ChallengeEventClientTest {
             )
             assertEquals(List(3) { SessionCounts(3, 1, 2) }, List(3) { counts.poll(5, TimeUnit.SECONDS) })
 
-            // One adjudication gives exactly one verdict and one class, however often the frame repeats.
+            // One adjudication gives exactly one verdict, with its class and reason, however often the frame repeats.
             val verdict = verdicts.poll(5, TimeUnit.SECONDS)!!
-            assertEquals(VerdictTone.NEUTRAL, verdict.tone)
             assertEquals(VerdictClass.UNJUDGEABLE, verdict.verdictClass)
-            assertEquals(VerdictClass.UNJUDGEABLE to "support_foot_occluded", classes.poll(5, TimeUnit.SECONDS))
+            assertEquals("support_foot_occluded", verdict.reasonCode)
             assertTrue(verdicts.isEmpty())
-            assertTrue(classes.isEmpty())
 
             // activeCue is null in every frame while liveAnalysis.detail is present: no cue.
             assertTrue(cues.isEmpty())
@@ -185,7 +181,6 @@ class ChallengeEventClientTest {
             onChallengeTotal = { totals += it },
             onLiveAnalysis = { statuses += Optional.ofNullable(it) },
             onSessionCounts = { counts += it },
-            onVerdictClass = { verdictClass, reason -> classes += verdictClass to reason },
         )
     }
 

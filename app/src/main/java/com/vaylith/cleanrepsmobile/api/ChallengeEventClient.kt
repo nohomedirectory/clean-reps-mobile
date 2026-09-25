@@ -12,7 +12,6 @@ import com.vaylith.cleanrepsmobile.model.LiveBlockedReason
 import com.vaylith.cleanrepsmobile.model.LiveSourceGeometry
 import com.vaylith.cleanrepsmobile.model.LiveSourceOrientation
 import com.vaylith.cleanrepsmobile.model.VerdictClass
-import com.vaylith.cleanrepsmobile.model.VerdictTone
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -25,25 +24,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 
-/**
- * Minimal SSE reader for the v1 /stream endpoint. Unknown events are ignored,
- * never inferred. Parsing is kept independent of the socket so the exact
- * server contract can be exercised in ordinary JVM unit tests.
- */
-class ChallengeEventClient(
-    private val baseUrl: String,
-    private val diagnostics: DiagnosticsLog? = null,
-) {
-    private var job: Job? = null
-    @Volatile private var activeConnection: HttpURLConnection? = null
-    private var lastDeliveredAdjudicationId: String? = null
-    private var lastSafeKickEventId: String? = null
-    private val deliveredCueIds = mutableSetOf<String>()
-
+/** The session's server events, so session logic can run against a fake stream. */
+interface ChallengeEvents {
     /**
-     * [onLiveAnalysis] receives every frame's `liveAnalysis` projection, null when
-     * the frame has none. [onVerdictClass] receives the class and reason code of
-     * each new adjudication, together with [onVerdict].
+     * Follows [sessionId]'s stream until [stop]; every callback runs on the main
+     * thread. [onVerdict] gets each new adjudication once. [onLiveAnalysis] gets
+     * every frame's `liveAnalysis` projection, null when the frame has none.
      */
     fun start(
         scope: CoroutineScope,
@@ -52,10 +38,39 @@ class ChallengeEventClient(
         onCue: (AthleteCue) -> Unit,
         onCueSafe: (AthleteCue) -> Unit,
         onError: (String) -> Unit,
-        onChallengeTotal: (Long) -> Unit = {},
-        onLiveAnalysis: (LiveAnalysisStatus?) -> Unit = {},
-        onSessionCounts: (SessionCounts) -> Unit = {},
-        onVerdictClass: (VerdictClass, String) -> Unit = { _, _ -> },
+        onChallengeTotal: (Long) -> Unit,
+        onLiveAnalysis: (LiveAnalysisStatus?) -> Unit,
+        onSessionCounts: (SessionCounts) -> Unit,
+    )
+
+    fun stop()
+}
+
+/**
+ * Minimal SSE reader for the v1 /stream endpoint. Unknown events are ignored,
+ * never inferred. Parsing is kept independent of the socket so the exact
+ * server contract can be exercised in ordinary JVM unit tests.
+ */
+class ChallengeEventClient(
+    private val baseUrl: String,
+    private val diagnostics: DiagnosticsLog,
+) : ChallengeEvents {
+    private var job: Job? = null
+    @Volatile private var activeConnection: HttpURLConnection? = null
+    private var lastDeliveredAdjudicationId: String? = null
+    private var lastSafeKickEventId: String? = null
+    private val deliveredCueIds = mutableSetOf<String>()
+
+    override fun start(
+        scope: CoroutineScope,
+        sessionId: String,
+        onVerdict: (MobileVerdictEvent) -> Unit,
+        onCue: (AthleteCue) -> Unit,
+        onCueSafe: (AthleteCue) -> Unit,
+        onError: (String) -> Unit,
+        onChallengeTotal: (Long) -> Unit,
+        onLiveAnalysis: (LiveAnalysisStatus?) -> Unit,
+        onSessionCounts: (SessionCounts) -> Unit,
     ) {
         stop()
         fun deliver(payload: String) {
@@ -70,10 +85,7 @@ class ChallengeEventClient(
                 if (lastDeliveredAdjudicationId != verdict.adjudicationId) {
                     lastDeliveredAdjudicationId = verdict.adjudicationId
                     lastSafeKickEventId = verdict.kickEventId
-                    scope.launch(Dispatchers.Main) {
-                        onVerdict(verdict)
-                        onVerdictClass(verdict.verdictClass, verdict.reasonCode)
-                    }
+                    scope.launch(Dispatchers.Main) { onVerdict(verdict) }
                 }
             }
             ChallengeEventParser.cue(frame)?.let { cue ->
@@ -116,7 +128,7 @@ class ChallengeEventClient(
                     // stop() disconnects the socket to end the read; that is not a stream failure.
                     ensureActive()
                     // The cause goes only to the redacted DiagnosticsLog; the status line gets the step message.
-                    diagnostics?.fail(DiagnosticStep.EVENT_STREAM, "reconnecting in 2 s", error)
+                    diagnostics.fail(DiagnosticStep.EVENT_STREAM, "reconnecting in 2 s", error)
                     val message = eventStreamErrorMessage(error)
                     withContext(Dispatchers.Main) { onError(message) }
                     kotlinx.coroutines.delay(2_000)
@@ -127,7 +139,7 @@ class ChallengeEventClient(
             }
         }
     }
-    fun stop() {
+    override fun stop() {
         job?.cancel()
         activeConnection?.disconnect()
         activeConnection = null
@@ -148,22 +160,14 @@ internal fun eventStreamErrorMessage(error: Throwable): String = when (error) {
     else -> StepMessages.forError(DiagnosticStep.EVENT_STREAM, error)
 }
 
-/**
- * [tone] stays until the verdict consumers move to [verdictClass]. The default
- * maps NEUTRAL to PENDING, the class that makes no sound and raises no LOST.
- */
+/** One adjudication. Only ACCEPTED and REJECTED make a verdict sound. */
 data class MobileVerdictEvent(
     val kickEventId: String,
     val kickSequence: Long,
     val adjudicationId: String,
     val adjudicationSequence: Long,
-    val tone: VerdictTone,
     val reasonCode: String,
-    val verdictClass: VerdictClass = when (tone) {
-        VerdictTone.ACCEPTED -> VerdictClass.ACCEPTED
-        VerdictTone.REJECTED -> VerdictClass.REJECTED
-        VerdictTone.NEUTRAL -> VerdictClass.PENDING
-    },
+    val verdictClass: VerdictClass,
 )
 
 /** This session's accepted, rejected and evidence-failed kick counts, from the top level of OverlayState. */
@@ -194,11 +198,11 @@ object ChallengeEventParser {
         // kick attribution after delay or manual supersession.
         val verdict = frame.obj("latestVerdict") ?: return null
         val state = verdict.text("state") ?: return null
-        val (tone, verdictClass) = when (state) {
-            "accepted" -> VerdictTone.ACCEPTED to VerdictClass.ACCEPTED
-            "rejected" -> VerdictTone.REJECTED to VerdictClass.REJECTED
-            "pending_review" -> VerdictTone.NEUTRAL to VerdictClass.PENDING
-            "evidence_failed" -> VerdictTone.NEUTRAL to VerdictClass.UNJUDGEABLE
+        val verdictClass = when (state) {
+            "accepted" -> VerdictClass.ACCEPTED
+            "rejected" -> VerdictClass.REJECTED
+            "pending_review" -> VerdictClass.PENDING
+            "evidence_failed" -> VerdictClass.UNJUDGEABLE
             else -> return null
         }
         return MobileVerdictEvent(
@@ -206,7 +210,6 @@ object ChallengeEventParser {
             kickSequence = verdict.long("kickSequence") ?: return null,
             adjudicationId = verdict.text("adjudicationId") ?: return null,
             adjudicationSequence = verdict.long("adjudicationSequence") ?: return null,
-            tone = tone,
             reasonCode = verdict.text("reasonCode") ?: state,
             verdictClass = verdictClass,
         )

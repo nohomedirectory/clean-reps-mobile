@@ -1,7 +1,7 @@
 package com.vaylith.cleanrepsmobile.feedback
 
 import android.media.ToneGenerator
-import com.vaylith.cleanrepsmobile.model.VerdictTone
+import com.vaylith.cleanrepsmobile.model.VerdictClass
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -47,9 +47,10 @@ class AthleteFeedbackTonesTest {
     }
 
     @Test fun `neutral verdicts are silent and the retired neutral beep is gone`() {
-        assertNull(CueTones.forVerdict(VerdictTone.NEUTRAL))
-        assertEquals(FeedbackCue.Accept, CueTones.forVerdict(VerdictTone.ACCEPTED))
-        assertEquals(FeedbackCue.Reject, CueTones.forVerdict(VerdictTone.REJECTED))
+        assertNull(CueTones.forVerdict(VerdictClass.PENDING))
+        assertNull(CueTones.forVerdict(VerdictClass.UNJUDGEABLE))
+        assertEquals(FeedbackCue.Accept, CueTones.forVerdict(VerdictClass.ACCEPTED))
+        assertEquals(FeedbackCue.Reject, CueTones.forVerdict(VerdictClass.REJECTED))
         for (cue in soundingCues) {
             assertFalse(CueTones.pulses(cue).any { it.tone == ToneGenerator.TONE_PROP_ACK })
         }

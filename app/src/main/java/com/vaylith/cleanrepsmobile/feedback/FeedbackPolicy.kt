@@ -9,7 +9,8 @@ import com.vaylith.cleanrepsmobile.model.phoneText
  * What the athlete hears or sees. The four tones are played by AthleteFeedback
  * (M5a) with these `android.media.ToneGenerator` constants, chosen to be told
  * apart by pitch and rhythm; audibility and distinctness are device evidence (P7):
- * - [Accept]: `TONE_PROP_BEEP2` for 90 ms, a high double beep (unchanged);
+ * - [Accept]: `TONE_PROP_BEEP2` for 280 ms, long enough for both beeps of its
+ *   high double beep (40 ms on, 200 ms off, 40 ms on);
  * - [Reject]: `TONE_CDMA_LOW_L` for 150 ms, one low long tone (unchanged);
  * - [Ready]: `TONE_PROP_PROMPT`, one short chirp. It is deliberately not
  *   `TONE_PROP_ACK`, the retired neutral beep that the owner heard as counting;

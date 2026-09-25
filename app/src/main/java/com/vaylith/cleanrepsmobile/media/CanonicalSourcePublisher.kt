@@ -112,9 +112,8 @@ interface PublisherListener {
     fun onPreviewStatus(status: PreviewStatus, detail: String) {}
 }
 
+/** Transport statuses only; preview state is reported through [PublisherListener.onPreviewStatus]. */
 enum class PublisherStatus {
-    /** No longer sent: preview state is reported through [PublisherListener.onPreviewStatus]. */
-    PREVIEW_READY,
     CONNECTING,
     LIVE,
     RECONNECTING,

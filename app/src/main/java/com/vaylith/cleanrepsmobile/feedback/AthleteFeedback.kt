@@ -6,31 +6,35 @@ import android.media.ToneGenerator
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
-import com.vaylith.cleanrepsmobile.model.VerdictTone
+import com.vaylith.cleanrepsmobile.model.VerdictClass
 import java.util.Locale
 
+/** The sounds and speech a session plays: [AthleteFeedback] on the phone, a recorder in tests. */
+interface AthleteSignals {
+    /** Plays one FeedbackPolicy cue. A [FeedbackCue.Banner] is shown by the screen and never sounds. */
+    fun cue(cue: FeedbackCue)
+
+    /** Speaks a hint at once, replacing anything still being spoken. */
+    fun speak(text: String)
+}
+
 /** Local signals only. Server remains the source of verdicts and structured CoachingCue events. */
-class AthleteFeedback(context: Context) : TextToSpeech.OnInitListener {
+class AthleteFeedback(context: Context) : TextToSpeech.OnInitListener, AthleteSignals {
     private val tones = ToneGenerator(AudioManager.STREAM_MUSIC, 80)
     private val tts = TextToSpeech(context, this)
     private val pulseTimer = Handler(Looper.getMainLooper())
     private var ttsReady = false
     override fun onInit(status: Int) { ttsReady = status == TextToSpeech.SUCCESS; if (ttsReady) tts.language = Locale.US }
 
-    /** Accepted and rejected verdicts sound; a NEUTRAL (pending or unjudgeable) verdict is silent. */
-    fun verdict(tone: VerdictTone) { CueTones.forVerdict(tone)?.let { cue(it) } }
-
-    /** Plays one FeedbackPolicy cue. A [FeedbackCue.Banner] is shown by the screen and never sounds. */
-    fun cue(cue: FeedbackCue) {
+    override fun cue(cue: FeedbackCue) {
         if (cue is FeedbackCue.Speak) speak(cue.text) else play(CueTones.pulses(cue))
     }
 
-    /** Speaks a hint at once, replacing anything still being spoken. */
-    fun speak(text: String) { if (ttsReady) tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "cue") }
+    override fun speak(text: String) { if (ttsReady) tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "cue") }
 
     /** Caller must enforce the safe post-kick window from the canonical cue event. */
     fun speakWhenSafe(text: String) = speak(text)
-    fun audioTest() { verdict(VerdictTone.ACCEPTED); speakWhenSafe("Clean Reps audio test. Earbud ready.") }
+    fun audioTest() { cue(FeedbackCue.Accept); speakWhenSafe("Clean Reps audio test. Earbud ready.") }
     fun close() { pulseTimer.removeCallbacksAndMessages(null); tones.release(); tts.shutdown() }
 
     private fun play(pattern: List<TonePulse>) {
@@ -82,10 +86,13 @@ object CueTones {
         is FeedbackCue.Speak, is FeedbackCue.Banner -> emptyList()
     }
 
-    /** The cue of a verdict tone; null (silence) for NEUTRAL, which the retired TONE_PROP_ACK used to sound. */
-    fun forVerdict(tone: VerdictTone): FeedbackCue? = when (tone) {
-        VerdictTone.ACCEPTED -> FeedbackCue.Accept
-        VerdictTone.REJECTED -> FeedbackCue.Reject
-        VerdictTone.NEUTRAL -> null
+    /**
+     * The sound of a verdict; null (silence) for PENDING and UNJUDGEABLE, which the
+     * retired TONE_PROP_ACK used to sound. Used until FeedbackPolicy is wired (M6b).
+     */
+    fun forVerdict(verdict: VerdictClass): FeedbackCue? = when (verdict) {
+        VerdictClass.ACCEPTED -> FeedbackCue.Accept
+        VerdictClass.REJECTED -> FeedbackCue.Reject
+        VerdictClass.PENDING, VerdictClass.UNJUDGEABLE -> null
     }
 }

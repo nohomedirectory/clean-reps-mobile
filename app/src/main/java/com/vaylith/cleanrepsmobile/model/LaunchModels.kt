@@ -15,7 +15,6 @@ enum class TargetHeight(val wireValue: String, val label: String) {
     LOW("low", "Low"), MIDDLE("middle", "Middle"), HIGH("high", "High"),
 }
 enum class CaptureReadiness { NOT_CONFIGURED, PUBLISHER_UNAVAILABLE, CONNECTING, LIVE, RECONNECTING, STOPPED, ERROR }
-enum class VerdictTone { ACCEPTED, REJECTED, NEUTRAL }
 
 data class BlockSelection(
     val technique: KickTechnique = KickTechnique.TEEP,
@@ -61,21 +60,4 @@ data class AthleteCue(
     val priority: Int,
     val kind: String,
     val safeAfterKickEventId: String?,
-)
-
-data class AppState(
-    val sessionId: String? = null,
-    val blockId: String? = null,
-    val blockReady: Boolean = false,
-    val practiceActive: Boolean = false,
-    val captureId: String? = null,
-    val captureStartedAtElapsedMs: Long? = null,
-    val lastManualKickEventId: String? = null,
-    val selection: BlockSelection = BlockSelection(),
-    val epoch: SourceEpoch = SourceEpoch(),
-    val readiness: CaptureReadiness = CaptureReadiness.NOT_CONFIGURED,
-    val statusDetail: String = "Configure private API and real canonical publisher before official capture.",
-    val debugSpeakVerdicts: Boolean = false,
-    val activeCue: AthleteCue? = null,
-    val challengeOfficialAcceptedCount: Long? = null,
 )

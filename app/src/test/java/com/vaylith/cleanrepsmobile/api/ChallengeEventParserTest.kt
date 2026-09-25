@@ -1,6 +1,7 @@
 package com.vaylith.cleanrepsmobile.api
 
-import com.vaylith.cleanrepsmobile.model.VerdictTone
+import com.vaylith.cleanrepsmobile.feedback.CueTones
+import com.vaylith.cleanrepsmobile.feedback.FeedbackCue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
@@ -29,10 +30,11 @@ class ChallengeEventParserTest {
         assertNull(ChallengeEventParser.parseChallengeTotal("{\"challengeOfficialAcceptedCount\":-1}"))
     }
     @Test fun `maps verdict semantics without confusing missing evidence and bad form`() {
-        assertEquals(VerdictTone.ACCEPTED, verdict("accepted", "count_worthy").tone)
-        assertEquals(VerdictTone.REJECTED, verdict("rejected", "balance_loss").tone)
-        assertEquals(VerdictTone.NEUTRAL, verdict("pending_review", "awaiting_analysis").tone)
-        assertEquals(VerdictTone.NEUTRAL, verdict("evidence_failed", "support_foot_occluded").tone)
+        // What each parsed verdict sounds like: bad form is REJECT, missing evidence is silent.
+        assertEquals(FeedbackCue.Accept, CueTones.forVerdict(verdict("accepted", "count_worthy").verdictClass))
+        assertEquals(FeedbackCue.Reject, CueTones.forVerdict(verdict("rejected", "balance_loss").verdictClass))
+        assertNull(CueTones.forVerdict(verdict("pending_review", "awaiting_analysis").verdictClass))
+        assertNull(CueTones.forVerdict(verdict("evidence_failed", "support_foot_occluded").verdictClass))
     }
 
     @Test fun `verdict classes keep pending review and missing evidence apart`() {
@@ -41,9 +43,6 @@ class ChallengeEventParserTest {
         assertEquals(VerdictClass.PENDING, verdict("pending_review", "awaiting_analysis").verdictClass)
         assertEquals(VerdictClass.UNJUDGEABLE, verdict("evidence_failed", "support_foot_occluded").verdictClass)
         assertEquals("support_foot_occluded", verdict("evidence_failed", "support_foot_occluded").reasonCode)
-        // The compatibility default derives the class from the tone; a NEUTRAL tone never makes a sound class.
-        assertEquals(VerdictClass.PENDING, MobileVerdictEvent("k", 1, "a", 1, VerdictTone.NEUTRAL, "r").verdictClass)
-        assertEquals(VerdictClass.ACCEPTED, MobileVerdictEvent("k", 1, "a", 1, VerdictTone.ACCEPTED, "r").verdictClass)
     }
 
     @Test fun `server-shaped frame yields verdict, live status, counts and no cue together`() {
