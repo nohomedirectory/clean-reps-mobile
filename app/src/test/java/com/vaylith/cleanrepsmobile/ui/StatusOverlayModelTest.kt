@@ -132,6 +132,26 @@ class StatusOverlayModelTest {
         }
     }
 
+    @Test fun `a due framing hint changes only the rail's acquiring line, never the chip`() {
+        val frames = contract.map { (state, reason) -> frame(state, reason) } + frame("stale", stale = true) + frame("acquiring", stale = true)
+        var searching = 0
+        for (json in frames) {
+            val due = live(json)!!.copy(framingHintDue = true)
+            val chip = StatusOverlayModel.from(due, null).analysis!!
+            assertEquals(json, chip(json), chip)
+            val hint = ControlRailModel.from(due, configured = true, permission = true).hint
+            if (due.liveAnalysis!!.state == LiveAnalysisState.ACQUIRING && due.liveAnalysis.available) {
+                assertEquals("Can't see you - get your whole body, head to feet, in view", hint)
+                assertEquals("Finding you", chip.text)
+                searching++
+            } else {
+                assertEquals(json, railHint(json), hint)
+            }
+            assertNotEquals(json, hint, chip.text)
+        }
+        assertEquals(1, searching)
+    }
+
     @Test fun `the reachability chip shows reachable with the server release, or unreachable`() {
         assertEquals(ReachabilityChip("Server: checking...", reachable = null), StatusOverlayModel.reachability(null))
         assertEquals(ReachabilityChip("Server reachable - release 0123abc", reachable = true),

@@ -112,6 +112,9 @@ class SessionController(
     /** [FeedbackPolicy.tick] every [TICK_MS] while the video is LIVE. */
     private var ticks: Job? = null
 
+    /** Sets [AppState.framingHintDue] once the current unseen spell reaches [FRAMING_HINT_AFTER_MS]. */
+    private var unseenSpell: Job? = null
+
     private var closed = false
 
     private val listener = object : PublisherListener {
@@ -432,6 +435,7 @@ class SessionController(
         // The lock follows the transport: on through CONNECTING, LIVE and RECONNECTING, off once the video has stopped.
         lockOrientation(!stopped)
         if (readiness == CaptureReadiness.LIVE) startTicks() else stopTicks()
+        watchUnseen(current.liveAnalysis)
         if (stopped) feedback.onPracticeStopped(elapsedRealtime())
         if (capture == null) return
         if (stopped) {
@@ -457,6 +461,7 @@ class SessionController(
                 readiness = CaptureReadiness.RECONNECTING, statusDetail = "Video reconnecting. Resume practice after checking the preview.")
         }
         stopTicks()
+        endUnseenSpell()
         play(feedback.onPracticePaused(elapsedRealtime()))
         if (session == null) return
         scope.launch {
@@ -536,6 +541,7 @@ class SessionController(
             onChallengeTotal = { total -> update { copy(challengeOfficialAcceptedCount = total) } },
             onLiveAnalysis = { status ->
                 update { copy(liveAnalysis = status) }
+                watchUnseen(status)
                 play(feedback.onStatus(status, elapsedRealtime()))
             },
             onSessionCounts = { counts -> update { copy(sessionCounts = counts) } },
@@ -572,6 +578,29 @@ class SessionController(
     private fun stopTicks() {
         ticks?.cancel()
         ticks = null
+    }
+
+    /**
+     * An unseen spell is a run of `acquiring` and `no_person` statuses while LIVE; any other
+     * status, a stale or missing one, or the video leaving LIVE ends it. A head-cut athlete is
+     * seen only now and then, so the search rarely lasts 8 s on its own (S9a D1: at most 5.3 s)
+     * and alternates with `no_person`, which already reads the whole-body line.
+     */
+    private fun watchUnseen(status: LiveAnalysisStatus?) {
+        val unseen = current.readiness == CaptureReadiness.LIVE && status != null && status.available &&
+            (status.state == LiveAnalysisState.ACQUIRING || status.state == LiveAnalysisState.NO_PERSON)
+        if (!unseen) return endUnseenSpell()
+        if (unseenSpell != null) return
+        unseenSpell = scope.launch {
+            delay(FRAMING_HINT_AFTER_MS)
+            update { copy(framingHintDue = true) }
+        }
+    }
+
+    private fun endUnseenSpell() {
+        unseenSpell?.cancel()
+        unseenSpell = null
+        if (current.framingHintDue) update { copy(framingHintDue = false) }
     }
 
     /** Applied synchronously through the port, before anything else runs. */
@@ -809,6 +838,9 @@ class SessionController(
         /** The FeedbackPolicy tick period while the video is LIVE. */
         const val TICK_MS = 250L
 
+        /** How long an unseen spell lasts before `acquiring` reads the whole-body line. */
+        const val FRAMING_HINT_AFTER_MS = 8_000L
+
         /** After a stop the primary button reads Restart video (PrimaryActionState), so the banner names it. */
         const val LEFT_SCREEN_BANNER = "Video stopped because Clean Reps left the screen. Tap Restart video."
     }
@@ -883,6 +915,11 @@ data class AppState(
     /** The label of the geometry the stream was started with, e.g. "landscape 1280x720". */
     val streamGeometry: String? = null,
     val liveAnalysis: LiveAnalysisStatus? = null,
+    /**
+     * The athlete has gone unseen for [SessionController.FRAMING_HINT_AFTER_MS] while LIVE, so an
+     * `acquiring` status reads the whole-body line in the rail hint (PrimaryActionState).
+     */
+    val framingHintDue: Boolean = false,
     val sessionCounts: SessionCounts? = null,
 ) {
     val videoRunning: Boolean get() = readiness in VIDEO_RUNNING

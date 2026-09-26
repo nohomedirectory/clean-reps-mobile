@@ -50,6 +50,11 @@ data class PrimaryActionInputs(
     val captureAttached: Boolean,
     /** The session stream's `liveAnalysis` projection, or null when none has arrived. */
     val liveAnalysis: LiveAnalysisStatus?,
+    /**
+     * The athlete has gone unseen (only `acquiring` and `no_person` statuses) for 8 s while LIVE.
+     * SessionController keeps the clock (`FRAMING_HINT_AFTER_MS`).
+     */
+    val framingHintDue: Boolean = false,
 )
 
 /**
@@ -86,7 +91,12 @@ data class PrimaryActionState(
             val button = button(inputs)
             val live = inputs.readiness == CaptureReadiness.LIVE
             val status = inputs.liveAnalysis?.takeIf { live } ?: return button
-            val hint = if (status.available) phoneText(status.state, status.reasonCode) else phoneText(LiveAnalysisState.STALE)
+            val hint = when {
+                !status.available -> phoneText(LiveAnalysisState.STALE)
+                // A long search gets the whole-body line: a head-cut athlete is seen only now and then.
+                status.state == LiveAnalysisState.ACQUIRING && inputs.framingHintDue -> phoneText(LiveAnalysisState.NO_PERSON)
+                else -> phoneText(status.state, status.reasonCode)
+            }
             val offersRestart = status.available &&
                 status.state == LiveAnalysisState.BLOCKED &&
                 status.reasonCode in RESTART_REASONS

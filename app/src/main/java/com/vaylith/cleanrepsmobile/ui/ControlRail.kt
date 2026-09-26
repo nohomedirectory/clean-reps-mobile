@@ -109,6 +109,7 @@ data class ControlRailModel(
                     permission = permission,
                     captureAttached = state.captureId != null,
                     liveAnalysis = state.liveAnalysis,
+                    framingHintDue = state.framingHintDue,
                 ),
             )
             return ControlRailModel(

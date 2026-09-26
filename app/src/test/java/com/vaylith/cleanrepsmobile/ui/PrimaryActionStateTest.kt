@@ -174,6 +174,27 @@ class PrimaryActionStateTest {
         }
     }
 
+    @Test fun `a due framing hint turns only a live acquiring hint into the whole-body line`() {
+        val wholeBody = phoneText(LiveAnalysisState.NO_PERSON)
+        assertEquals("Can't see you - get your whole body, head to feet, in view", wholeBody)
+        var searching = 0
+        for (row in table) {
+            val notDue = PrimaryActionState.from(row)
+            val due = PrimaryActionState.from(row.copy(framingHintDue = true))
+            val status = row.liveAnalysis
+            if (row.readiness == LIVE && status != null && status.available && status.state == LiveAnalysisState.ACQUIRING) {
+                assertEquals("$row", "Finding you...", notDue.hint)
+                assertEquals("$row", notDue.copy(hint = wholeBody), due)
+                searching++
+            } else {
+                // Every other status, a stale one and anything not LIVE ignore the flag, and so does the button.
+                assertEquals("$row", notDue, due)
+            }
+        }
+        // LIVE: 3 practice states x 2 in-flight x 2 configured x 2 permission x 2 attached.
+        assertEquals(3 * 2 * 2 * 2 * 2, searching)
+    }
+
     @Test fun `a capture block while ready to practise keeps Start practice and offers Restart video`() {
         for (reason in restartReasons) {
             for (practice in listOf(NOT_STARTED, PAUSED, ACTIVE)) {

@@ -41,7 +41,9 @@ import com.vaylith.cleanrepsmobile.model.LiveBlockedReason
 import com.vaylith.cleanrepsmobile.model.ManualEvidenceWindow
 import com.vaylith.cleanrepsmobile.model.SourceEpoch
 import com.vaylith.cleanrepsmobile.model.VerdictClass
+import com.vaylith.cleanrepsmobile.ui.ControlRailModel
 import com.vaylith.cleanrepsmobile.ui.PracticeState
+import com.vaylith.cleanrepsmobile.ui.StatusOverlayModel
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.time.Instant
@@ -50,6 +52,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.runBlocking
@@ -849,6 +852,224 @@ class SessionControllerTest {
         assertFalse(controller.state.value.restartOffered)
     }
 
+    private fun advance(ms: Long) {
+        scheduler.advanceTimeBy(ms)
+        scheduler.runCurrent()
+    }
+
+    private fun railHint(state: AppState) = ControlRailModel.from(state, configured = true, permission = true).hint
+
+    private fun SessionController.railHint() = railHint(state.value)
+
+    private fun SessionController.chip() = StatusOverlayModel.from(state.value, health = null).analysis?.text
+
+    @Test fun `a search that lasts 8 s reads the whole-body hint, tracking clears it, and the chip keeps its label`() {
+        val controller = live()
+        events.onLiveAnalysis(status(LiveAnalysisState.ACQUIRING))
+        advance(SessionController.FRAMING_HINT_AFTER_MS - 1)
+        // The server repeats the status; the search goes on.
+        events.onLiveAnalysis(status(LiveAnalysisState.ACQUIRING))
+        assertFalse(controller.state.value.framingHintDue)
+        assertEquals(FINDING, controller.railHint())
+        advance(1)
+        assertTrue(controller.state.value.framingHintDue)
+        assertEquals(WHOLE_BODY, controller.railHint())
+        assertEquals("Finding you", controller.chip())
+        advance(60_000)
+        assertEquals(WHOLE_BODY, controller.railHint())
+
+        events.onLiveAnalysis(status(LiveAnalysisState.TRACKING))
+        assertFalse(controller.state.value.framingHintDue)
+        assertEquals("Tracking you", controller.railHint())
+        // A new search starts a new spell.
+        events.onLiveAnalysis(status(LiveAnalysisState.ACQUIRING))
+        advance(SessionController.FRAMING_HINT_AFTER_MS - 1)
+        assertEquals(FINDING, controller.railHint())
+        advance(1)
+        assertEquals(WHOLE_BODY, controller.railHint())
+        assertEquals(8_000L, SessionController.FRAMING_HINT_AFTER_MS)
+    }
+
+    @Test fun `a search shorter than 8 s never shows the whole-body hint - any seen, stale or missing status ends the spell`() {
+        val controller = live()
+        val interruptions = listOf(
+            status(LiveAnalysisState.TRACKING),
+            status(LiveAnalysisState.HEAD_CUT),
+            status(LiveAnalysisState.SIDEWAYS),
+            status(LiveAnalysisState.STARTING),
+            status(LiveAnalysisState.BLOCKED, LiveBlockedReason.WORKER_RETRY_LIMIT),
+            status(LiveAnalysisState.ACQUIRING, stale = true),
+            null,
+            status(LiveAnalysisState.TRACKING),
+        )
+        for (interruption in interruptions) {
+            // Each search stops 1 ms short; the one before must not carry over.
+            events.onLiveAnalysis(status(LiveAnalysisState.ACQUIRING))
+            advance(SessionController.FRAMING_HINT_AFTER_MS - 1)
+            assertEquals("$interruption", FINDING, controller.railHint())
+            events.onLiveAnalysis(interruption)
+            advance(SessionController.FRAMING_HINT_AFTER_MS)
+            assertFalse("$interruption", controller.state.value.framingHintDue)
+            assertTrue("$interruption", controller.railHint() != WHOLE_BODY)
+        }
+    }
+
+    @Test fun `no_person time counts toward the spell, and the video leaving LIVE ends it`() {
+        val controller = live()
+        events.onLiveAnalysis(status(LiveAnalysisState.NO_PERSON))
+        advance(5_000)
+        assertEquals(WHOLE_BODY, controller.railHint())
+        assertEquals("No one in view", controller.chip())
+        events.onLiveAnalysis(status(LiveAnalysisState.ACQUIRING))
+        advance(2_999)
+        assertEquals(FINDING, controller.railHint())
+        advance(1)
+        assertEquals(WHOLE_BODY, controller.railHint())
+        assertEquals("Finding you", controller.chip())
+        // Back and forth: the same spell, the same line.
+        events.onLiveAnalysis(status(LiveAnalysisState.NO_PERSON))
+        events.onLiveAnalysis(status(LiveAnalysisState.ACQUIRING))
+        assertEquals(WHOLE_BODY, controller.railHint())
+
+        // The video reconnects: the spell ends, and LIVE again starts a new one.
+        publisher.listener.onPublisherStatus(PublisherStatus.RECONNECTING, "reconnecting")
+        assertFalse(controller.state.value.framingHintDue)
+        publisher.live()
+        assertEquals(FINDING, controller.railHint())
+        advance(SessionController.FRAMING_HINT_AFTER_MS - 1)
+        assertEquals(FINDING, controller.railHint())
+        advance(1)
+        assertEquals(WHOLE_BODY, controller.railHint())
+
+        controller.stopVideo()
+        settle()
+        assertFalse(controller.state.value.framingHintDue)
+        assertNull(controller.railHint())
+    }
+
+    /**
+     * Feeds [timeline] (ms after the first status, wire state; each status repeated every second, as
+     * a stream of snapshots would) and returns every change of the rail hint with its time, and the
+     * chip labels seen with an `acquiring` status.
+     */
+    private fun replay(controller: SessionController, timeline: List<Pair<Long, String>>): Pair<List<Pair<Long, String?>>, Set<String?>> {
+        val t0 = scheduler.currentTime
+        val seen = mutableListOf<Pair<Long, AppState>>()
+        val watch = uiScope.launch { controller.state.collect { seen += (scheduler.currentTime - t0) to it } }
+        val end = timeline.last().first + 1_000
+        for ((index, point) in timeline.withIndex()) {
+            val (at, state) = point
+            val next = timeline.getOrNull(index + 1)?.first ?: end
+            var t = at
+            while (t < next) {
+                advance(t0 + t - scheduler.currentTime)
+                events.onLiveAnalysis(status(LiveAnalysisState.fromWire(state)))
+                t += 1_000
+            }
+        }
+        advance(t0 + end - scheduler.currentTime)
+        watch.cancel()
+        val changes = mutableListOf<Pair<Long, String?>>()
+        for ((at, state) in seen) {
+            val hint = railHint(state)
+            if (changes.isEmpty() || changes.last().second != hint) changes += at to hint
+        }
+        val searchChips = seen.map { it.second }
+            .filter { it.liveAnalysis?.state == LiveAnalysisState.ACQUIRING }
+            .map { StatusOverlayModel.from(it, health = null).analysis?.text }
+            .toSet()
+        return changes to searchChips
+    }
+
+    /** The longest run of `acquiring` alone in [timeline]. */
+    private fun longestSearchMs(timeline: List<Pair<Long, String>>): Long {
+        var longest = 0L
+        var since: Long? = null
+        for ((at, state) in timeline) {
+            if (state == "acquiring") {
+                if (since == null) since = at
+            } else {
+                since?.let { longest = maxOf(longest, at - it) }
+                since = null
+            }
+        }
+        return longest
+    }
+
+    @Test fun `D1 warm - the recorded S9a status changes show the whole-body hint 8 s into the one long unseen spell`() {
+        // The search alone never lasts 8 s on D1, so a rule on acquiring alone would never fire.
+        assertEquals(5_284L, longestSearchMs(D1_WARM))
+        val controller = live()
+        val (changes, searchChips) = replay(controller, D1_WARM)
+        assertEquals(
+            listOf(
+                0L to null,
+                4L to "Starting analysis...",
+                7_833L to "Too far - move closer",
+                9_091L to WHOLE_BODY,
+                10_609L to FINDING,
+                12_122L to WHOLE_BODY,
+                12_876L to FINDING,
+                15_395L to "Tracking you",
+                17_920L to FINDING,
+                18_675L to WHOLE_BODY,
+                19_936L to FINDING,
+                22_206L to WHOLE_BODY,
+                25_733L to SIDEWAYS,
+                26_996L to WHOLE_BODY,
+                29_766L to FINDING,
+                32_029L to SIDEWAYS,
+                33_289L to FINDING,
+                34_805L to WHOLE_BODY,
+                37_321L to FINDING,
+                // 8 s after the spell began at 33.289 s; it holds through the flicker until sideways.
+                41_289L to WHOLE_BODY,
+                49_904L to SIDEWAYS,
+                52_427L to WHOLE_BODY,
+            ),
+            changes,
+        )
+        assertEquals(setOf<String?>("Finding you"), searchChips)
+        assertFalse(controller.state.value.practiceActive)
+    }
+
+    @Test fun `D1 practice - the same rule while practice is active`() {
+        assertEquals(5_290L, longestSearchMs(D1_PRACTICE))
+        val controller = live()
+        controller.startPractice()
+        settle()
+        assertTrue(controller.state.value.practiceActive)
+        val (changes, searchChips) = replay(controller, D1_PRACTICE)
+        assertEquals(
+            listOf(
+                0L to null,
+                8L to "Starting analysis...",
+                7_843L to "Too far - move closer",
+                10_113L to FINDING,
+                12_130L to WHOLE_BODY,
+                12_634L to FINDING,
+                15_415L to "Tracking you",
+                17_931L to FINDING,
+                18_685L to WHOLE_BODY,
+                19_941L to FINDING,
+                22_207L to WHOLE_BODY,
+                25_732L to SIDEWAYS,
+                26_990L to WHOLE_BODY,
+                29_760L to FINDING,
+                32_022L to SIDEWAYS,
+                33_283L to FINDING,
+                34_792L to WHOLE_BODY,
+                37_311L to FINDING,
+                41_283L to WHOLE_BODY,
+                49_919L to SIDEWAYS,
+                52_448L to WHOLE_BODY,
+            ),
+            changes,
+        )
+        assertEquals(setOf<String?>("Finding you"), searchChips)
+        assertTrue(controller.state.value.practiceActive)
+    }
+
     @Test fun `with one no_person status after Start and no further events, the tick gives exactly one LOST at +10 s`() {
         val controller = live()
         val armedAt = scheduler.currentTime
@@ -1307,6 +1528,33 @@ class SessionControllerTest {
         val BUILD = ClientBuild("0.3.0-rehearsal", 3, "abc1234", "motorola", "moto g power 2024", 34)
         val ALLOWLIST = setOf("live", "reconnecting", "stopped", "left the screen", "camera unavailable")
         val PRACTICE_CALLS = setOf("createBlock", "markReacquired", "pausePractice", "resumePractice")
+
+        const val FINDING = "Finding you..."
+        const val WHOLE_BODY = "Can't see you - get your whole body, head to feet, in view"
+        const val SIDEWAYS = "Video is sideways - stop and restart video"
+
+        /**
+         * The status changes of the S9a D1 runs (head-cut athlete, harness at d06a4cd): ms after the
+         * first status poll, and the state. The athlete is seen only now and then.
+         */
+        val D1_WARM = listOf(
+            4L to "starting", 1_013L to "starting", 7_833L to "too_small", 9_091L to "no_person",
+            10_609L to "acquiring", 12_122L to "no_person", 12_876L to "acquiring", 15_395L to "tracking",
+            17_920L to "acquiring", 18_675L to "no_person", 19_936L to "acquiring", 22_206L to "no_person",
+            25_733L to "sideways", 26_996L to "no_person", 29_766L to "acquiring", 32_029L to "sideways",
+            33_289L to "acquiring", 34_805L to "no_person", 37_321L to "acquiring", 42_605L to "no_person",
+            44_868L to "acquiring", 46_630L to "no_person", 47_388L to "acquiring", 48_647L to "no_person",
+            49_904L to "sideways", 52_427L to "no_person",
+        )
+        val D1_PRACTICE = listOf(
+            8L to "starting", 1_028L to "starting", 7_843L to "too_small", 10_113L to "acquiring",
+            12_130L to "no_person", 12_634L to "acquiring", 15_415L to "tracking", 17_931L to "acquiring",
+            18_685L to "no_person", 19_941L to "acquiring", 22_207L to "no_person", 25_732L to "sideways",
+            26_990L to "no_person", 29_760L to "acquiring", 32_022L to "sideways", 33_283L to "acquiring",
+            34_792L to "no_person", 37_311L to "acquiring", 42_601L to "no_person", 44_879L to "acquiring",
+            46_646L to "no_person", 47_150L to "acquiring", 48_660L to "no_person", 49_919L to "sideways",
+            52_448L to "no_person",
+        )
 
         fun apiFailure(step: DiagnosticStep, kind: FailureKind) =
             ChallengeApi.ApiException("${step.wireName} failed $MARKER", step, kind, ConnectException(MARKER))
