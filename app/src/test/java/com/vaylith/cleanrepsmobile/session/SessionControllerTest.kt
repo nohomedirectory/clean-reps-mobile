@@ -862,7 +862,7 @@ class SessionControllerTest {
         val lostAt = signals.cues.indices.filter { signals.cues[it] == FeedbackCue.Lost }.map { signals.cueTimes[it] }
         assertEquals(listOf(armedAt + 10_000), lostAt)
         // OD-4: the spoken hint comes with it.
-        assertTrue(FeedbackCue.Speak("Step into the frame") in signals.cues)
+        assertTrue(FeedbackCue.Speak("Can't see you - get your whole body, head to feet, in view") in signals.cues)
 
         scheduler.advanceTimeBy(14_000)
         scheduler.runCurrent()

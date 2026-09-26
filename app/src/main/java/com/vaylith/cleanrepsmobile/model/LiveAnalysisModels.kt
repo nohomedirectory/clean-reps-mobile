@@ -82,7 +82,8 @@ fun phoneText(state: LiveAnalysisState, reason: LiveBlockedReason? = null): Stri
     LiveAnalysisState.STARTING -> "Starting analysis..."
     LiveAnalysisState.ACQUIRING -> "Finding you..."
     LiveAnalysisState.TRACKING -> "Tracking you"
-    LiveAnalysisState.NO_PERSON -> "Step into the frame"
+    // One text for an empty frame and for a head-cut athlete the pose model returns no body for (k4r.76).
+    LiveAnalysisState.NO_PERSON -> "Can't see you - get your whole body, head to feet, in view"
     LiveAnalysisState.SIDEWAYS -> "Video is sideways - stop and restart video"
     LiveAnalysisState.HEAD_CUT -> "Head not visible - move the phone back or higher"
     LiveAnalysisState.FEET_CUT -> "Feet not visible - move the phone back or lower"

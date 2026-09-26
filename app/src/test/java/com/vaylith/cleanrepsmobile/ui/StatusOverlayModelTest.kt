@@ -24,7 +24,7 @@ class StatusOverlayModelTest {
         Triple("starting", null, "Starting analysis..."),
         Triple("acquiring", null, "Finding you..."),
         Triple("tracking", null, "Tracking you"),
-        Triple("no_person", null, "Step into the frame"),
+        Triple("no_person", null, "Can't see you - get your whole body, head to feet, in view"),
         Triple("sideways", null, "Video is sideways - stop and restart video"),
         Triple("head_cut", null, "Head not visible - move the phone back or higher"),
         Triple("feet_cut", null, "Feet not visible - move the phone back or lower"),

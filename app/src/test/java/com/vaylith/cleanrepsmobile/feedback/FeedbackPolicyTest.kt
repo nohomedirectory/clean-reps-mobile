@@ -172,7 +172,7 @@ class FeedbackPolicyTest {
         assertEquals(
             listOf(
                 Event(10_000, "tick", FeedbackCue.Lost),
-                Event(10_000, "tick", FeedbackCue.Speak("Step into the frame")),
+                Event(10_000, "tick", FeedbackCue.Speak("Can't see you - get your whole body, head to feet, in view")),
             ),
             run.log,
         )

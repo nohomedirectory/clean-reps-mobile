@@ -229,7 +229,8 @@ class CameraScreenContractTest {
     }
 
     @Test fun `the C3 phone texts have one table, read by the rail hint, while the chip shows a short label`() {
-        val texts = setOf("Starting analysis...", "Finding you...", "Tracking you", "Step into the frame", "Head not visible - move the phone back or higher",
+        val texts = setOf("Starting analysis...", "Finding you...", "Tracking you", "Can't see you - get your whole body, head to feet, in view",
+            "Head not visible - move the phone back or higher",
             "Automatic analysis supports Teep only", "Analysis status unavailable")
         val owners = mainSources.filter { (_, source) -> literals(source).any { it in texts } }.map { it.first }
         assertEquals(listOf("LiveAnalysisModels.kt"), owners)
@@ -237,7 +238,8 @@ class CameraScreenContractTest {
         assertTrue("phoneText(" in ui.getValue("PrimaryActionState.kt"))
         assertFalse("phoneText(" in ui.getValue("StatusOverlay.kt"))
         // Planted: a second table is found; a text quoted in a comment is not.
-        assertEquals(listOf("Tracking you"), literals("val chip = \"Tracking you\" // \"Finding you...\"\n/* \"Step into the frame\" */").filter { it in texts })
+        assertEquals(listOf("Tracking you"),
+            literals("val chip = \"Tracking you\" // \"Finding you...\"\n/* \"Can't see you - get your whole body, head to feet, in view\" */").filter { it in texts })
     }
 
     @Test fun `the Paused badge is measured before the chip label, so a long label can never squeeze it away`() {

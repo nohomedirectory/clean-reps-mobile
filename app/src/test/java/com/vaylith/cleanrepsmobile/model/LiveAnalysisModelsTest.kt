@@ -10,7 +10,7 @@ class LiveAnalysisModelsTest {
         LiveAnalysisState.STARTING to "Starting analysis...",
         LiveAnalysisState.ACQUIRING to "Finding you...",
         LiveAnalysisState.TRACKING to "Tracking you",
-        LiveAnalysisState.NO_PERSON to "Step into the frame",
+        LiveAnalysisState.NO_PERSON to "Can't see you - get your whole body, head to feet, in view",
         LiveAnalysisState.SIDEWAYS to "Video is sideways - stop and restart video",
         LiveAnalysisState.HEAD_CUT to "Head not visible - move the phone back or higher",
         LiveAnalysisState.FEET_CUT to "Feet not visible - move the phone back or lower",
