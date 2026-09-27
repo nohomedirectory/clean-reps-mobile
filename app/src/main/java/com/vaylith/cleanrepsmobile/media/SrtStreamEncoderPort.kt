@@ -15,14 +15,28 @@ internal class SrtStreamEncoderPort(private val stream: SrtStream) : EncoderPort
     override val isStreaming: Boolean get() = stream.isStreaming
     override val isRecording: Boolean get() = stream.isRecording
 
-    override fun prepareVideo(geometry: CaptureGeometry): Boolean = stream.prepareVideo(
-        CaptureGeometry.PREPARE_WIDTH,
-        CaptureGeometry.PREPARE_HEIGHT,
-        VIDEO_BITRATE,
-        VIDEO_FPS,
-        VIDEO_KEYFRAME_INTERVAL_SECONDS,
-        geometry.rotationArg,
-    )
+    override fun prepareVideo(geometry: CaptureGeometry): Boolean {
+        val prepared = stream.prepareVideo(
+            CaptureGeometry.PREPARE_WIDTH,
+            CaptureGeometry.PREPARE_HEIGHT,
+            VIDEO_BITRATE,
+            VIDEO_FPS,
+            VIDEO_KEYFRAME_INTERVAL_SECONDS,
+            geometry.rotationArg,
+        )
+        if (prepared) {
+            // OutputConfiguration defaults to MIRROR_MODE_AUTO for front Camera2.
+            // Correct the framework texture mirror after RootEncoder's camera rotation.
+            // takePhoto uses the stream flags too, keeping Frame check and recording identical.
+            stream.getGlInterface().apply {
+                setIsPreviewHorizontalFlip(geometry.compensateMirrorHorizontally)
+                setIsPreviewVerticalFlip(geometry.compensateMirrorVertically)
+                setIsStreamHorizontalFlip(geometry.compensateMirrorHorizontally)
+                setIsStreamVerticalFlip(geometry.compensateMirrorVertically)
+            }
+        }
+        return prepared
+    }
 
     override fun prepareAudio(): Boolean = stream.prepareAudio(48_000, true, 128_000, false, false)
 

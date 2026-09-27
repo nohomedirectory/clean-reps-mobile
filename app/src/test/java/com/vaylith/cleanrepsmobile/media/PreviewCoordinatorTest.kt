@@ -380,4 +380,69 @@ class PreviewCoordinatorTest {
         assertEquals("Camera preview failed (IllegalStateException)", detail)
         assertEquals("IllegalStateException", log.entries().last().errorClass)
     }
+
+    @Test fun `switching a stopped preview closes the old camera before selecting and preparing the new lens`() {
+        val coordinator = coordinator().attach()
+        port.calls.clear()
+        assertTrue(coordinator.selectCamera(CameraFacing.FRONT, 270) {
+            assertFalse(port.isOnPreview)
+            assertFalse(port.isStreaming)
+            port.calls += "selectFront"
+        })
+        assertEquals(listOf("stopPreview", "selectFront", "prepareVideo(0)", "startPreview(surface#1,2400x1080)"), port.calls)
+        assertEquals(CameraFacing.FRONT, coordinator.cameraFacing)
+        assertEquals(270, coordinator.sensorOrientationDeg)
+        assertEquals(CameraFacing.FRONT, coordinator.preparedGeometry?.cameraFacing)
+
+        coordinator.displayRotationChanged(0)
+        assertEquals(CameraFacing.FRONT, coordinator.preparedGeometry?.cameraFacing)
+        assertEquals(270, coordinator.preparedGeometry?.sensorOrientationDeg)
+    }
+
+    @Test fun `switch is rejected from Go live gate through recording and cannot change an active capture`() {
+        val coordinator = coordinator().attach()
+        assertTrue(coordinator.goLive() is StreamGate.Ready)
+        port.calls.clear()
+        assertFalse(coordinator.canChangeCamera)
+        assertFalse(coordinator.selectCamera(CameraFacing.FRONT, 270) { fail("must not switch a prepared start") })
+        assertTrue(port.calls.isEmpty())
+
+        port.startStream()
+        coordinator.streamStarted()
+        port.startRecord()
+        assertFalse(coordinator.selectCamera(CameraFacing.FRONT, 270) { fail("must not switch a running capture") })
+        port.stopStream()
+        assertFalse(coordinator.selectCamera(CameraFacing.FRONT, 270) { fail("must not switch while recording") })
+        port.stopRecord()
+        coordinator.streamStopped()
+        assertTrue(coordinator.selectCamera(CameraFacing.FRONT, 270) {})
+        coordinator.release(port)
+        assertFalse(coordinator.selectCamera(CameraFacing.BACK, 90) { fail("must not switch after release") })
+    }
+
+    @Test fun `a lens without 720p reports its failure and switching back restores the preview`() {
+        val coordinator = coordinator().attach()
+        port.encoderRefuses = { it.cameraFacing == CameraFacing.FRONT }
+        assertTrue(coordinator.selectCamera(CameraFacing.FRONT, 270) {})
+        assertEquals(CameraFacing.FRONT, coordinator.cameraFacing)
+        assertNull(coordinator.preparedGeometry)
+        assertFalse(port.isOnPreview)
+        assertTrue(statuses().last() is PreviewStatus.CameraError)
+        assertTrue(coordinator.goLive() is StreamGate.NotReady)
+        assertTrue(coordinator.selectCamera(CameraFacing.BACK, 90) {})
+        assertEquals(PreviewStatus.Ready, statuses().last())
+        assertTrue(port.isOnPreview)
+    }
+
+    @Test fun `switch cancels the old lens automatic retry and never silently uses unreadable sensor metadata`() {
+        val coordinator = coordinator().attach()
+        coordinator.cameraError("Open camera failed: 1")
+        assertTrue(coordinator.selectCamera(CameraFacing.FRONT, 270) {})
+        port.calls.clear()
+        scheduler.runAll()
+        assertTrue(port.calls.isEmpty())
+        assertFalse(coordinator.selectCamera(CameraFacing.BACK, null) { fail("unreadable sensor must not select") })
+        assertEquals(CameraFacing.FRONT, coordinator.cameraFacing)
+        assertEquals(270, coordinator.sensorOrientationDeg)
+    }
 }

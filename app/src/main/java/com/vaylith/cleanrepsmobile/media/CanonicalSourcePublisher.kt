@@ -44,8 +44,14 @@ interface CanonicalSourcePublisher {
     /** The geometry the encoder is prepared with (LIVE pill, diagnostics, C2); null before the first prepare. */
     val preparedGeometry: CaptureGeometry?
 
-    /** SENSOR_ORIENTATION of the first back camera; null when it could not be read. */
+    /** SENSOR_ORIENTATION of the selected camera; null when it could not be read. */
     val sensorOrientationDeg: Int?
+
+    val cameraFacing: CameraFacing get() = CameraFacing.BACK
+    val canSwitchCamera: Boolean get() = false
+
+    /** Select the other lens while stopped. Camera-open failures use the preview-error callback. */
+    fun switchCamera(): Boolean = false
 
     /** "Reopen camera" after CAMERA_ERROR: one new attempt to open the camera and start the preview. */
     fun reopenCamera()
@@ -147,15 +153,19 @@ class MediaMtxSrtPublisher(
     }
     private val port = SrtStreamEncoderPort(stream)
     private val mainThread = Handler(Looper.getMainLooper())
+    private val cameraPreferences = context.getSharedPreferences("capture-camera", Context.MODE_PRIVATE)
+    private val cameraSensors = readCameraSensors()
+    private val initialCameraFacing = CameraFacing.restored(cameraPreferences.getString("facing", null), cameraSensors.keys)
     private val rotationWatcher: DisplayRotationWatcher =
         DisplayRotationWatcher(context) { rotation -> coordinator.displayRotationChanged(rotation) }
     private val coordinator: PreviewCoordinator<Surface> = PreviewCoordinator(
         port,
         listener,
         diagnostics,
-        backCameraSensorOrientation(),
+        cameraSensors[initialCameraFacing],
         { delayMs, action -> mainThread.postDelayed({ action() }, delayMs) },
-        rotationWatcher::currentRotation,
+        initialCameraFacing = initialCameraFacing,
+        displayRotation = rotationWatcher::currentRotation,
     )
     private val binder = PreviewSurfaceBinder(coordinator)
     private var intentionallyStopped = false
@@ -163,6 +173,7 @@ class MediaMtxSrtPublisher(
     private var released = false
 
     init {
+        selectCameraSource(initialCameraFacing)
         watchCamera()
         // A GL draw failure (including a failed Frame check) is logged instead of thrown on the GL thread.
         stream.getGlInterface().setRenderErrorCallback(object : RenderErrorCallback {
@@ -175,6 +186,17 @@ class MediaMtxSrtPublisher(
     override val isAvailable get() = config.validationError() == null
     override val preparedGeometry: CaptureGeometry? get() = coordinator.preparedGeometry
     override val sensorOrientationDeg: Int? get() = coordinator.sensorOrientationDeg
+    override val cameraFacing: CameraFacing get() = coordinator.cameraFacing
+    override val canSwitchCamera: Boolean
+        get() = coordinator.canChangeCamera && cameraFacing.opposite in cameraSensors && stream.videoSource is Camera2Source
+
+    override fun switchCamera(): Boolean {
+        if (!canSwitchCamera) return false
+        val target = cameraFacing.opposite
+        val selected = coordinator.selectCamera(target, cameraSensors[target]) { selectCameraSource(target) }
+        if (selected) cameraPreferences.edit().putString("facing", target.name).apply()
+        return selected
+    }
 
     /** Prepares for the current display rotation, then follows rotations and the view's surface. */
     override fun attachPreview(view: SurfaceView) {
@@ -303,17 +325,37 @@ class MediaMtxSrtPublisher(
         )
     }
 
-    /** SENSOR_ORIENTATION of the first back-facing camera id: the camera RootEncoder opens by default. */
-    private fun backCameraSensorOrientation(): Int? = try {
+    /** RootEncoder opens the first matching facing in this same CameraManager order. */
+    private fun readCameraSensors(): Map<CameraFacing, Int?> = try {
         val cameras = context.getSystemService(CameraManager::class.java)
-        val backCamera = cameras.cameraIdList.firstOrNull {
-            cameras.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+        buildMap {
+            cameras.cameraIdList.forEach { id ->
+                val characteristics = cameras.getCameraCharacteristics(id)
+                val facing = when (characteristics.get(CameraCharacteristics.LENS_FACING)) {
+                    CameraCharacteristics.LENS_FACING_BACK -> CameraFacing.BACK
+                    CameraCharacteristics.LENS_FACING_FRONT -> CameraFacing.FRONT
+                    else -> null
+                }
+                if (facing != null && facing !in this) {
+                    val sensor = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)
+                    put(facing, sensor)
+                    diagnostics?.info(DiagnosticStep.CAMERA_OPEN, "${facing.label.lowercase()} camera sensor orientation ${sensor ?: "unavailable"}")
+                }
+            }
         }
-        backCamera?.let { cameras.getCameraCharacteristics(it).get(CameraCharacteristics.SENSOR_ORIENTATION) }
-            .also { diagnostics?.info(DiagnosticStep.CAMERA_OPEN, "back camera sensor orientation ${it ?: "unavailable"}") }
     } catch (error: Exception) {
-        diagnostics?.fail(DiagnosticStep.CAMERA_OPEN, "could not read the back camera orientation", error)
-        null
+        diagnostics?.fail(DiagnosticStep.CAMERA_OPEN, "could not read camera orientations", error)
+        emptyMap()
+    }
+
+    /**
+     * Camera2Source.switchCamera changes its remembered facing while stopped; the
+     * next prepare/start opens that lens. openCameraId cannot select a stopped source.
+     */
+    private fun selectCameraSource(facing: CameraFacing) {
+        val camera = stream.videoSource as Camera2Source
+        val requested = if (facing == CameraFacing.FRONT) CameraHelper.Facing.FRONT else CameraHelper.Facing.BACK
+        if (camera.getCameraFacing() != requested) camera.switchCamera()
     }
 
     /**

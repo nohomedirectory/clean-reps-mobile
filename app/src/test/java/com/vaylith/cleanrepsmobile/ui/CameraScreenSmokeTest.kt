@@ -14,6 +14,7 @@ import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -138,13 +139,22 @@ class CameraScreenSmokeTest {
         assertEquals(listOf("attachPreview"), publisher.calls)
         assertEquals(1, publisher.attachedViews.size)
 
+        // A stopped preview can change lens without creating a session or replacing the publisher.
+        compose.onNodeWithContentDescription("Switch to front camera").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Front").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Switch to rear camera").performClick()
+        compose.onNodeWithText("Rear").assertIsDisplayed()
+        assertEquals(emptyList<String>(), backend.calls)
+        assertEquals(listOf("attachPreview", "switchCamera", "switchCamera"), publisher.calls)
+
         primary(PrimaryAction.GO_LIVE).performClick()
         primary(PrimaryAction.CONNECTING).assertIsDisplayed().assertIsNotEnabled()
         compose.onNodeWithText(PrimaryActionState.CONNECTING_REASON).assertIsDisplayed()
         // OD-7: the orientation lock went on at the tap.
         assertEquals(listOf(true), locks)
         assertEquals(listOf("createSession", "attachCapture"), backend.calls.take(2))
-        assertEquals(listOf("attachPreview", "start:0"), publisher.calls)
+        assertEquals(listOf("attachPreview", "switchCamera", "switchCamera", "start:0"), publisher.calls)
+        compose.onNodeWithContentDescription("Stop video to switch camera").assertIsNotEnabled()
 
         compose.runOnIdle { publisher.live() }
         primary(PrimaryAction.START_PRACTICE).assertIsDisplayed().assertIsEnabled()
@@ -153,6 +163,7 @@ class CameraScreenSmokeTest {
         assertRailPlacement(orientation, PrimaryAction.START_PRACTICE)
         assertTrue(backend.calls.toString(), "createBlock" in backend.calls)
         assertEquals(1, publishers.size)
+        compose.onNodeWithContentDescription("Stop video to switch camera").assertIsNotEnabled()
     }
 
     /** The primary button; the status pill can show the same words ("Connecting..."), but it is not clickable. */

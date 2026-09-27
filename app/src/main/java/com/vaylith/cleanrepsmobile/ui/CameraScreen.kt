@@ -28,6 +28,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -114,6 +115,8 @@ fun CameraScreen(
     onAudioTest: () -> Unit,
 ) {
     val state by controller.state.collectAsState()
+    var cameraFacing by remember(publisher) { mutableStateOf(publisher.cameraFacing) }
+    val cameraSwitch = CameraSwitchModel.from(state, permission, publisher.canSwitchCamera, cameraFacing)
     var sheet by rememberSaveable { mutableStateOf<SetupSection?>(null) }
     val rail = ControlRailModel.from(state, configured = settings.validationError() == null, permission = permission)
     // The rotation banner follows the geometry the running video was started with; OD-7 keeps the window locked to it.
@@ -195,8 +198,11 @@ fun CameraScreen(
             }
         }
         val railView: @Composable (Modifier) -> Unit = { modifier ->
-            ControlRail(rail, landscape, onCommand, controller::stopVideo, onSettings = { sheet = SetupSection.CONNECTION },
-                onDrill = { sheet = SetupSection.DRILL }, onOverflow = onOverflow, modifier = modifier)
+            ControlRail(rail, cameraSwitch, landscape, onCommand, controller::stopVideo, onSettings = { sheet = SetupSection.CONNECTION },
+                onDrill = { sheet = SetupSection.DRILL }, onOverflow = onOverflow,
+                onSwitchCamera = {
+                    if (permission && controller.switchCamera()) cameraFacing = publisher.cameraFacing
+                }, modifier = modifier)
         }
         val safe = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(RailText.EDGE_DP.dp)
         if (landscape) {

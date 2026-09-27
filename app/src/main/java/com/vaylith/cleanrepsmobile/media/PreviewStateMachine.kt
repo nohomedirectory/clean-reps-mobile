@@ -91,6 +91,22 @@ class PreviewStateMachine<S>(
 
     private val busy: Boolean get() = port.isStreaming || port.isRecording
 
+    /** A prepared Go-live request already owns its lens, even before startStream is called. */
+    val canChangeCamera: Boolean get() = !busy && streamGeometry == null
+
+    /** Switch the one stopped source, invalidate its old preparation, and rebuild this preview. */
+    fun changeCamera(geometry: CaptureGeometry, changeSource: () -> Unit) {
+        check(canChangeCamera) { "Stop video before switching cameras" }
+        if (port.isOnPreview) port.stopPreview()
+        preparedGeometry = null
+        requestedGeometry = null
+        cameraError = null
+        prepareFailed = false
+        changeSource()
+        requestedGeometry = geometry
+        applyGeometry(geometry)
+    }
+
     fun surfaceAvailable(surface: S, width: Int, height: Int) {
         if (surface != this.surface && port.isOnPreview) {
             // A new surface without a loss callback: detach the old one first (I2).

@@ -54,6 +54,7 @@ import com.vaylith.cleanrepsmobile.BuildConfig
 import com.vaylith.cleanrepsmobile.api.ServerHealth
 import com.vaylith.cleanrepsmobile.media.CanonicalSourcePublisher
 import com.vaylith.cleanrepsmobile.media.CaptureGeometry
+import com.vaylith.cleanrepsmobile.media.CameraFacing
 
 /** This app build and the phone it runs on. Never any connection setting. */
 data class BuildIdentity(
@@ -98,6 +99,7 @@ data class DiagnosticsModel(
             eventLines: List<String>,
             exportText: String,
             health: ServerHealth?,
+            facing: CameraFacing = geometry?.cameraFacing ?: CameraFacing.BACK,
         ): DiagnosticsModel {
             val unverified = geometry?.sensorCompensationUnverified == true || sensorDeg == 270
             return DiagnosticsModel(
@@ -108,7 +110,7 @@ data class DiagnosticsModel(
                     serverLine(health),
                 ),
                 camera = listOfNotNull(
-                    "Back camera sensor orientation: ${sensorDeg?.let { "$it degrees" } ?: "unavailable"}",
+                    "${facing.label} camera sensor orientation: ${sensorDeg?.let { "$it degrees" } ?: "unavailable"}",
                     geometry?.let {
                         "Prepared geometry: ${it.label}, display rotation ${it.displayRotationDeg} degrees, rotation argument ${it.rotationArg}"
                     } ?: "Prepared geometry: not prepared yet",
@@ -158,7 +160,7 @@ fun DiagnosticsSheet(
     val clipboard = LocalClipboardManager.current
     var refresh by remember { mutableIntStateOf(0) }
     val model = remember(refresh, health) {
-        DiagnosticsModel.from(BuildIdentity.current(), publisher.sensorOrientationDeg, publisher.preparedGeometry, eventLines(), exportText(), health)
+        DiagnosticsModel.from(BuildIdentity.current(), publisher.sensorOrientationDeg, publisher.preparedGeometry, eventLines(), exportText(), health, publisher.cameraFacing)
     }
     var frame by remember { mutableStateOf<FrameCheckResult?>(null) }
     var checking by remember { mutableStateOf(false) }

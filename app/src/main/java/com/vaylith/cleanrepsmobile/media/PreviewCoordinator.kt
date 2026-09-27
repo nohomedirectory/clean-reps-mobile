@@ -10,7 +10,7 @@ import com.vaylith.cleanrepsmobile.diagnostics.StepMessages
  * types so it runs in JVM tests over a fake [EncoderPort].
  *
  * It resolves the upright [CaptureGeometry] from the display rotation and the
- * back camera's sensor orientation, drives the [PreviewStateMachine], and reports
+ * selected camera's sensor orientation, drives the [PreviewStateMachine], and reports
  * preview statuses only through [PublisherListener.onPreviewStatus] (P-SEP):
  * nothing here calls `onPublisherStatus`, so a preview event can never move
  * capture readiness or tear down a live capture. Camera callbacks are preview
@@ -23,13 +23,18 @@ internal class PreviewCoordinator<S>(
     private val port: EncoderPort<S>,
     private val listener: PublisherListener,
     private val diagnostics: DiagnosticsLog?,
-    /** SENSOR_ORIENTATION of the first back camera; null when it could not be read. */
-    val sensorOrientationDeg: Int?,
+    /** SENSOR_ORIENTATION of the selected camera; null when it could not be read. */
+    sensorOrientationDeg: Int?,
     /** Runs an action after a delay in ms, on the input thread: the automatic retry after "camera in use". */
     private val schedule: (Long, () -> Unit) -> Unit,
+    initialCameraFacing: CameraFacing = CameraFacing.BACK,
     /** A fresh read of the display rotation (0..3); null when it is unavailable. */
     private val displayRotation: () -> Int?,
 ) {
+    var sensorOrientationDeg: Int? = sensorOrientationDeg
+        private set
+    var cameraFacing: CameraFacing = initialCameraFacing
+        private set
     private val machine = PreviewStateMachine(LoggingPort(port), ::report)
     private var released = false
     /** The one automatic retry after "camera in use" is spent until the camera opens again. */
@@ -39,6 +44,30 @@ internal class PreviewCoordinator<S>(
 
     val preparedGeometry: CaptureGeometry? get() = machine.preparedGeometry
     val hasSurface: Boolean get() = machine.hasSurface
+    val canChangeCamera: Boolean get() = !released && machine.canChangeCamera
+
+    /**
+     * Accept a lens change only while video and recording are off. A true result means
+     * the requested lens is selected; asynchronous camera/prepare failures still use
+     * the existing preview-error path. No capture or source epoch is changed here.
+     */
+    fun selectCamera(facing: CameraFacing, sensorOrientation: Int?, changeSource: () -> Unit): Boolean {
+        if (!canChangeCamera || facing == cameraFacing) return false
+        val geometry = geometryFor(displayRotation(), sensorOrientation, facing) ?: return false
+        retryGeneration++
+        inUseRetryUsed = false
+        var selected = false
+        guarded {
+            diagnostics?.info(DiagnosticStep.CAMERA_OPEN, "select ${facing.label.lowercase()} camera; sensor orientation $sensorOrientation")
+            machine.changeCamera(geometry) {
+                changeSource()
+                sensorOrientationDeg = sensorOrientation
+                cameraFacing = facing
+                selected = true
+            }
+        }
+        return selected
+    }
 
     fun surfaceAvailable(surface: S, width: Int, height: Int) = guarded { machine.surfaceAvailable(surface, width, height) }
 
@@ -136,16 +165,19 @@ internal class PreviewCoordinator<S>(
         machine.retry()
     }
 
-    private fun geometryFor(rotation: Int?): CaptureGeometry? {
+    private fun geometryFor(
+        rotation: Int?,
+        sensor: Int? = sensorOrientationDeg,
+        facing: CameraFacing = cameraFacing,
+    ): CaptureGeometry? {
         if (rotation == null) {
             diagnostics?.info(DiagnosticStep.PREVIEW_START, "display rotation unavailable")
             return null
         }
-        val sensor = sensorOrientationDeg
         val geometry = if (sensor == null) {
-            Result.failure(IllegalStateException("The back camera's orientation could not be read"))
+            Result.failure(IllegalStateException("The ${if (facing == CameraFacing.BACK) "back" else "front"} camera's orientation could not be read"))
         } else {
-            CaptureGeometry.forDisplayRotation(rotation, sensor)
+            CaptureGeometry.forDisplayRotation(rotation, sensor, facing)
         }
         return geometry.getOrElse { error ->
             val reason = error.message ?: "Unsupported camera orientation"

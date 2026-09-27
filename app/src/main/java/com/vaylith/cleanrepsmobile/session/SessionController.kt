@@ -308,6 +308,12 @@ class SessionController(
     /** "Reopen camera" after a camera error: one new attempt to open the camera and start the preview. */
     fun reopenCamera() = publisher.reopenCamera()
 
+    /** Do not let a lens change race capture creation or alter a live evidence interval. */
+    fun switchCamera(): Boolean {
+        if (closed || current.videoRunning || current.practiceActive || current.requestInFlight) return false
+        return publisher.switchCamera()
+    }
+
     /** `GET /health` of this controller's server (C5), for the reachability chip; it never throws. */
     suspend fun serverHealth(): ServerHealth = backend.health()
 

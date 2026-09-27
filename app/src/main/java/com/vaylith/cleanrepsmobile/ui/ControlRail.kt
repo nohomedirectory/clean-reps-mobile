@@ -211,12 +211,14 @@ private val RailScrim = Color.Black.copy(alpha = 0.55f)
 @Composable
 fun ControlRail(
     model: ControlRailModel,
+    cameraSwitch: CameraSwitchModel,
     landscape: Boolean,
     onCommand: (RailCommand) -> Unit,
     onStopVideo: () -> Unit,
     onSettings: () -> Unit,
     onDrill: () -> Unit,
     onOverflow: (OverflowAction) -> Unit,
+    onSwitchCamera: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scrim = modifier.background(RailScrim, RoundedCornerShape(20.dp)).padding(RailText.PADDING_DP.dp)
@@ -229,8 +231,10 @@ fun ControlRail(
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 SettingsButton(model.settingsEnabled, onSettings)
+                CameraSwitchButton(cameraSwitch, onSwitchCamera)
                 OverflowMenu(model.overflow, onOverflow)
             }
+            cameraSwitch.reason?.let { Text(it, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center) }
             DrillChip(model, onDrill, Modifier.fillMaxWidth())
             PrimaryButton(model, onCommand, Modifier.fillMaxWidth())
             if (model.stopVideoShown) StopVideoButton(model.stopVideoEnabled, onStopVideo, Modifier.fillMaxWidth())
@@ -238,12 +242,14 @@ fun ControlRail(
         }
     } else {
         Column(scrim.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            DrillChip(model, onDrill, Modifier.fillMaxWidth())
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 SettingsButton(model.settingsEnabled, onSettings)
-                PrimaryButton(model, onCommand, Modifier.weight(1f))
+                CameraSwitchButton(cameraSwitch, onSwitchCamera)
                 OverflowMenu(model.overflow, onOverflow)
             }
+            cameraSwitch.reason?.let { Text(it, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center) }
+            DrillChip(model, onDrill, Modifier.fillMaxWidth())
+            PrimaryButton(model, onCommand, Modifier.fillMaxWidth())
             if (model.stopVideoShown) StopVideoButton(model.stopVideoEnabled, onStopVideo, Modifier.fillMaxWidth())
             // Below the button row, the lines get the band's full width rather than the button's share.
             RailLines(model, onCommand)

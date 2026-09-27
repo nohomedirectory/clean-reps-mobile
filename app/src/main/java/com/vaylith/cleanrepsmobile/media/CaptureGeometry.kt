@@ -5,7 +5,7 @@ import com.vaylith.cleanrepsmobile.model.CaptureOrientation
 /**
  * Encoder geometry that keeps transmitted frames upright for the current display
  * rotation. Pure; the caller reads the display rotation (`Surface.ROTATION_0` to
- * `ROTATION_270`, i.e. 0..3) and the back camera's `SENSOR_ORIENTATION`.
+ * `ROTATION_270`, i.e. 0..3) and the selected camera's `SENSOR_ORIENTATION`.
  *
  * This models RootEncoder 2.7.0 as read from its bytecode, not yet from a device:
  * `prepareVideo(PREPARE_WIDTH, PREPARE_HEIGHT, ..., rotationArg)` gives the
@@ -33,8 +33,20 @@ data class CaptureGeometry private constructor(
     val encodedHeight: Int,
     val orientation: CaptureOrientation,
     val sensorCompensationUnverified: Boolean,
+    val cameraFacing: CameraFacing,
 ) {
     val displayRotationDeg: Int get() = displayRotation * 90
+
+    /**
+     * Camera2's default front-camera mirror is part of SurfaceTexture's transform.
+     * RootEncoder 2.7.0 StreamBase rotates that texture by rotationArg - 90, so
+     * removing its mirror AFTER that rotation needs H in portrait and V in
+     * landscape (R H R^-1). Apply the same correction to preview, encoder and photo.
+     */
+    val compensateMirrorHorizontally: Boolean
+        get() = cameraFacing == CameraFacing.FRONT && orientation == CaptureOrientation.PORTRAIT
+    val compensateMirrorVertically: Boolean
+        get() = cameraFacing == CameraFacing.FRONT && orientation == CaptureOrientation.LANDSCAPE
 
     /** Shown on the LIVE pill, e.g. `landscape 1280x720`. */
     val label: String get() = "${orientation.wireValue} ${encodedWidth}x$encodedHeight"
@@ -54,7 +66,11 @@ data class CaptureGeometry private constructor(
         fun turnedText(videoOrientation: CaptureOrientation?): String =
             "Phone turned - video stays ${videoOrientation?.wireValue ?: "as it started"}. Stop video to switch."
 
-        fun forDisplayRotation(displayRotation: Int, sensorOrientation: Int): Result<CaptureGeometry> {
+        fun forDisplayRotation(
+            displayRotation: Int,
+            sensorOrientation: Int,
+            cameraFacing: CameraFacing = CameraFacing.BACK,
+        ): Result<CaptureGeometry> {
             if (displayRotation !in 0..3) {
                 return Result.failure(IllegalArgumentException("Unsupported display rotation ($displayRotation)"))
             }
@@ -72,6 +88,7 @@ data class CaptureGeometry private constructor(
                     encodedHeight = if (portrait) PREPARE_WIDTH else PREPARE_HEIGHT,
                     orientation = if (portrait) CaptureOrientation.PORTRAIT else CaptureOrientation.LANDSCAPE,
                     sensorCompensationUnverified = sensorOrientation == 270,
+                    cameraFacing = cameraFacing,
                 ),
             )
         }

@@ -33,12 +33,12 @@ class DiagnosticsSheetModelTest {
             model.identity,
         )
         assertEquals(
-            listOf("Back camera sensor orientation: 90 degrees", "Prepared geometry: landscape 1280x720, display rotation 90 degrees, rotation argument 0"),
+            listOf("Rear camera sensor orientation: 90 degrees", "Prepared geometry: landscape 1280x720, display rotation 90 degrees, rotation argument 0"),
             model.camera,
         )
         assertFalse(model.cameraUnverified)
         val unknown = DiagnosticsModel.from(build, null, null, emptyList(), "", null)
-        assertEquals(listOf("Back camera sensor orientation: unavailable", "Prepared geometry: not prepared yet"), unknown.camera)
+        assertEquals(listOf("Rear camera sensor orientation: unavailable", "Prepared geometry: not prepared yet"), unknown.camera)
         assertEquals(listOf("No events yet"), unknown.events)
     }
 

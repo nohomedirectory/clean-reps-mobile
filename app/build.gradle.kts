@@ -40,8 +40,8 @@ android {
         applicationId = "com.vaylith.cleanrepsmobile"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0-rehearsal"
+        versionCode = 4
+        versionName = "0.3.1-rehearsal"
         buildConfigField("String", "GIT_SHA", quoted(gitSha()))
         buildConfigField("String", "CHALLENGE_API_BASE_URL", quoted(secret("CHALLENGE_API_BASE_URL")))
         buildConfigField("String", "MEDIAMTX_SRT_HOST", quoted(secret("MEDIAMTX_SRT_HOST")))

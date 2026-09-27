@@ -46,6 +46,14 @@ The stream path remains `million-kicks-camera`. An APK containing private settin
 - **Turning the phone while live never rotates the video.** Once the phone has been held in another orientation for about 1.5 s, a banner reads "Phone turned - video stays landscape. Stop video to switch." (or "... video stays portrait ..."). A phone lying flat never triggers it. To switch, tap **Stop video**, turn the phone, then tap **Restart video**.
 - Landscape works best for kicks. While the prepared video is portrait, a dismissible hint says "Landscape works best for kicks".
 
+## Front and rear cameras
+
+The camera-switch icon beside the gear selects **Front** or **Rear** and remembers the choice on this phone. Choose the lens while video is stopped, then check that your head, feet and kicking movement fit in the frame before tapping **Go live**. The front camera lets you see the controls while facing the phone.
+
+While video runs, the switch is disabled and says **Stop video to switch camera**. Pausing practice alone does not stop the video. Stop video, dismiss the Session check, switch cameras, then tap **Restart video**. Each new capture uses the selected lens's sensor orientation; the transmitted picture and preview are not mirrored, so the actual left/right kicking leg stays unchanged. Use **Diagnostics > Frame check** to inspect the entire transmitted picture after switching.
+
+A device without both cameras shows **Camera switch unavailable**. If a lens cannot open at the capture resolution, the app reports the camera error; switch back while stopped. Both lenses need an owner device check before use; JVM tests cannot establish hardware orientation or image quality.
+
 ## The camera screen
 
 - **Full screen and dark.** The window runs edge to edge (also behind the camera cutout) with the system bars hidden; swipe to show them. The preview fills the screen and crops like a camera app; it is never stretched. On a 20:9 phone the preview hides about a tenth of the transmitted frame at the top and at the bottom in landscape (at the left and at the right in portrait); **Diagnostics > Frame check** shows the whole frame.

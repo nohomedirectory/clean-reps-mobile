@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.view.SurfaceView
 import com.vaylith.cleanrepsmobile.media.CanonicalSourcePublisher
 import com.vaylith.cleanrepsmobile.media.CaptureGeometry
+import com.vaylith.cleanrepsmobile.media.CameraFacing
 import com.vaylith.cleanrepsmobile.media.PublisherListener
 import com.vaylith.cleanrepsmobile.media.PublisherResult
 import com.vaylith.cleanrepsmobile.media.PublisherStatus
@@ -38,6 +39,14 @@ internal class FakePublisher(
     fun live() = listener.onPublisherStatus(PublisherStatus.LIVE, "Canonical SRT source is live: $sourceId")
 
     override val isAvailable = true
+    override var cameraFacing: CameraFacing = CameraFacing.BACK
+        private set
+    override val canSwitchCamera = true
+    override fun switchCamera(): Boolean {
+        calls += "switchCamera"
+        cameraFacing = if (cameraFacing == CameraFacing.BACK) CameraFacing.FRONT else CameraFacing.BACK
+        return true
+    }
     override val sensorOrientationDeg: Int = preparedGeometry.sensorOrientationDeg
 
     override fun attachPreview(view: SurfaceView) {

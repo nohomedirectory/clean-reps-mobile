@@ -322,6 +322,24 @@ class SessionControllerTest {
         assertEquals("capture-1", controller.state.value.captureId)
     }
 
+    @Test fun `switching camera cannot race capture creation or change a paused live capture`() {
+        val controller = controller()
+        assertTrue(controller.switchCamera())
+        assertEquals(listOf("switchCamera"), publisher.calls)
+        controller.startVideo()
+        assertFalse(controller.switchCamera())
+        settle()
+        publisher.live()
+        settle()
+        assertFalse(controller.state.value.practiceActive)
+        assertFalse(controller.switchCamera())
+        assertEquals(1, publisher.calls.count { it == "switchCamera" })
+        controller.stopVideo()
+        settle()
+        assertTrue(controller.switchCamera())
+        assertEquals(2, publisher.calls.count { it == "switchCamera" })
+    }
+
     @Test fun `client-info retries re-send the byte-identical body`() {
         backend.failNext("clientInfo", apiFailure(DiagnosticStep.CLIENT_INFO, FailureKind.Timeout))
         backend.failNext("clientInfo", apiFailure(DiagnosticStep.CLIENT_INFO, FailureKind.Http(503)))
@@ -1340,6 +1358,10 @@ class SessionControllerTest {
         fun live() = listener.onPublisherStatus(PublisherStatus.LIVE, "Canonical SRT source is live: $SOURCE")
 
         override val isAvailable = true
+        override fun switchCamera(): Boolean {
+            calls += "switchCamera"
+            return true
+        }
         override fun attachPreview(view: SurfaceView) = Unit
         override fun releasePreview() = Unit
         override val preparedGeometry: CaptureGeometry = CaptureGeometry.forDisplayRotation(0, 90).getOrThrow()
