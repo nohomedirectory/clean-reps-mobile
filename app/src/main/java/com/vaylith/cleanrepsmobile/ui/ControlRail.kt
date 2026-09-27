@@ -1,6 +1,5 @@
 package com.vaylith.cleanrepsmobile.ui
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,7 +9,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
@@ -32,7 +30,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -71,6 +68,7 @@ enum class OverflowAction(val label: String) {
     SPEAK_VERDICTS("Speak verdicts"),
     MANUAL_MARKER("Save manual review marker"),
     LAST_SESSION_CHECK("Last session check"),
+    THEMES("Themes"),
     DIAGNOSTICS("Diagnostics"),
 }
 
@@ -137,6 +135,7 @@ data class ControlRailModel(
             add(OverflowItem(OverflowAction.SPEAK_VERDICTS, checked = state.debugSpeakVerdicts))
             if (state.practiceActive) add(OverflowItem(OverflowAction.MANUAL_MARKER, checked = null))
             if (state.lastCaptureId != null) add(OverflowItem(OverflowAction.LAST_SESSION_CHECK, checked = null))
+            add(OverflowItem(OverflowAction.THEMES, checked = null))
             add(OverflowItem(OverflowAction.DIAGNOSTICS, checked = null))
         }
 
@@ -200,8 +199,6 @@ object RailText {
     }
 }
 
-private val RailScrim = Color.Black.copy(alpha = 0.55f)
-
 /**
  * The controls over the preview on a translucent scrim, along the edge nearest the thumb: a
  * column on the right in landscape, a band along the bottom in portrait. The caller places it
@@ -221,7 +218,7 @@ fun ControlRail(
     onSwitchCamera: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val scrim = modifier.background(RailScrim, RoundedCornerShape(20.dp)).padding(RailText.PADDING_DP.dp)
+    val scrim = modifier.cameraThemePanel().padding(RailText.PADDING_DP.dp)
     if (landscape) {
         // Scrolls, so a wrapped reason, the hint and Restart video never overflow a short landscape window.
         Column(
@@ -242,14 +239,16 @@ fun ControlRail(
         }
     } else {
         Column(scrim.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                SettingsButton(model.settingsEnabled, onSettings)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                DrillChip(model, onDrill, Modifier.weight(1f))
                 CameraSwitchButton(cameraSwitch, onSwitchCamera)
-                OverflowMenu(model.overflow, onOverflow)
             }
             cameraSwitch.reason?.let { Text(it, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center) }
-            DrillChip(model, onDrill, Modifier.fillMaxWidth())
-            PrimaryButton(model, onCommand, Modifier.fillMaxWidth())
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SettingsButton(model.settingsEnabled, onSettings)
+                PrimaryButton(model, onCommand, Modifier.weight(1f))
+                OverflowMenu(model.overflow, onOverflow)
+            }
             if (model.stopVideoShown) StopVideoButton(model.stopVideoEnabled, onStopVideo, Modifier.fillMaxWidth())
             // Below the button row, the lines get the band's full width rather than the button's share.
             RailLines(model, onCommand)

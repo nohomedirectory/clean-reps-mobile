@@ -2,14 +2,22 @@ package com.vaylith.cleanrepsmobile.ui
 
 import android.content.ComponentName
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.os.Build
 import android.os.Looper
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -42,6 +50,7 @@ import com.vaylith.cleanrepsmobile.session.LostDeliveries
 import com.vaylith.cleanrepsmobile.session.SessionController
 import com.vaylith.cleanrepsmobile.session.SharedPreferencesPendingLostStore
 import com.vaylith.cleanrepsmobile.session.lostServerKey
+import java.io.File
 import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -93,6 +102,8 @@ class CameraScreenSmokeTest {
     private val backend = SmokeBackend()
     private val locks = mutableListOf<Boolean>()
     private val publishers = mutableListOf<FakePublisher>()
+    private var shownAppearance: CameraThemePreferences? = null
+    private var shownPrimary: Color? = null
 
     @After fun tearDown() {
         uiScope.cancel()
@@ -114,6 +125,85 @@ class CameraScreenSmokeTest {
     @Test @Config(qualifiers = LANDSCAPE)
     fun `landscape with settings and the camera allowed offers Go live, then Connecting and Start practice`() =
         goLive(Configuration.ORIENTATION_LANDSCAPE, LANDSCAPE_GEOMETRY)
+
+    @Test @Config(qualifiers = PORTRAIT)
+    fun `portrait themes and motion change live without touching the capture`() =
+        changeThemesWhileLive(Configuration.ORIENTATION_PORTRAIT, PORTRAIT_GEOMETRY)
+
+    @Test @Config(qualifiers = LANDSCAPE)
+    fun `landscape themes and motion change live without touching the capture`() =
+        changeThemesWhileLive(Configuration.ORIENTATION_LANDSCAPE, LANDSCAPE_GEOMETRY)
+
+    private fun changeThemesWhileLive(orientation: Int, geometry: CaptureGeometry) {
+        val publisher = render(CONFIGURED, permission = true, geometry = geometry, orientation = orientation)
+        primary(PrimaryAction.GO_LIVE).performClick()
+        compose.runOnIdle { publisher.live() }
+        primary(PrimaryAction.START_PRACTICE).assertIsDisplayed()
+
+        val publisherCalls = publisher.calls.toList()
+        val backendCalls = backend.calls.toList()
+        val orientationLocks = locks.toList()
+        val originalPreview = publisher.attachedViews.single()
+        val store = CameraThemeStore(RuntimeEnvironment.getApplication())
+        val primaryColors = mutableSetOf<Color?>()
+
+        fun assertCaptureUnchanged() {
+            assertEquals(1, publishers.size)
+            assertSame(publisher, publishers.single())
+            assertSame(originalPreview, publisher.attachedViews.single())
+            assertEquals(publisherCalls, publisher.calls)
+            assertEquals(backendCalls, backend.calls)
+            assertEquals(orientationLocks, locks)
+        }
+
+        CameraThemeOption.entries.forEach { theme ->
+            compose.onNodeWithContentDescription("More controls").performClick()
+            compose.onNodeWithText("Themes").performClick()
+            compose.onNodeWithText(theme.label).performScrollTo().performClick().assertIsSelected()
+            compose.runOnIdle {
+                assertEquals(theme, shownAppearance?.theme)
+                assertEquals(theme.palette.accent, shownPrimary)
+                assertEquals(theme, store.load().theme)
+                primaryColors += shownPrimary
+                assertCaptureUnchanged()
+            }
+            compose.onNodeWithContentDescription("Close Themes").performClick()
+            compose.onNodeWithText("LIVE - ${geometry.label}").assertIsDisplayed()
+            primary(PrimaryAction.START_PRACTICE).assertIsDisplayed().assertIsEnabled()
+            captureThemeIfRequested(theme, orientation)
+        }
+        assertEquals("each theme changes the displayed control palette", CameraThemeOption.entries.size, primaryColors.size)
+
+        compose.onNodeWithContentDescription("More controls").performClick()
+        compose.onNodeWithText("Themes").performClick()
+        val motion = compose.onNodeWithContentDescription("Theme motion").performScrollTo()
+        motion.assertIsOn().performClick().assertIsOff()
+        compose.runOnIdle {
+            assertEquals(false, shownAppearance?.motionEnabled)
+            assertEquals(false, store.load().motionEnabled)
+            assertCaptureUnchanged()
+        }
+        motion.performClick().assertIsOn()
+        compose.runOnIdle {
+            assertEquals(true, store.load().motionEnabled)
+            assertCaptureUnchanged()
+        }
+        compose.onNodeWithContentDescription("Close Themes").performClick()
+    }
+
+    /**
+     * Optional real Compose screenshots for a Robolectric NATIVE graphics run. Ordinary
+     * tests do not capture or write files. The SurfaceView is a fake: these prove the
+     * themed controls' rendering, never a physical camera image or video transport.
+     */
+    private fun captureThemeIfRequested(theme: CameraThemeOption, orientation: Int) {
+        val directory = System.getenv("CLEAN_REPS_THEME_SCREENSHOT_DIR")?.takeIf { it.isNotBlank() } ?: return
+        val output = File(directory).apply { mkdirs() }
+        val screen = if (orientation == Configuration.ORIENTATION_LANDSCAPE) "landscape" else "portrait"
+        val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
+        val file = File(output, "camera-$screen-${theme.name.lowercase()}.png")
+        file.outputStream().use { assertTrue("PNG was written", bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+    }
 
     private fun setUpConnection(orientation: Int) {
         val publisher = render(ConnectionSettings(), permission = false, geometry = geometryFor(orientation), orientation = orientation)
@@ -176,6 +266,8 @@ class CameraScreenSmokeTest {
         compose.setContent {
             shown = LocalConfiguration.current.orientation
             CleanRepsTheme {
+                shownAppearance = LocalCameraTheme.current.preferences
+                shownPrimary = MaterialTheme.colorScheme.primary
                 CameraScreen(
                     controller = controller,
                     publisher = controller.publisher,

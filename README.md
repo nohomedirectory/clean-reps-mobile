@@ -54,6 +54,12 @@ While video runs, the switch is disabled and says **Stop video to switch camera*
 
 A device without both cameras shows **Camera switch unavailable**. If a lens cannot open at the capture resolution, the app reports the camera error; switch back while stopped. Both lenses need an owner device check before use; JVM tests cannot establish hardware orientation or image quality.
 
+## Themes
+
+Open **More controls > Themes** to choose **Space**, **Psychedelic**, **Slime**, or **Classic**. Space is the default: dark astronomical controls with stars and orbital details. Psychedelic uses flowing violet and pink; Slime uses soft green shapes; Classic keeps the original orange. The layout, camera picture, recording and analysis stay the same. Live, warning and error indicators retain their meaning in every theme.
+
+Your theme and **Motion** choice are remembered on this phone. Motion adds slow decorative movement to the controls; switch it off for a still theme. It also respects the phone's disabled-animation setting. Theme changes do not restart video or create a new capture.
+
 ## The camera screen
 
 - **Full screen and dark.** The window runs edge to edge (also behind the camera cutout) with the system bars hidden; swipe to show them. The preview fills the screen and crops like a camera app; it is never stretched. On a 20:9 phone the preview hides about a tenth of the transmitted frame at the top and at the bottom in landscape (at the left and at the right in portrait); **Diagnostics > Frame check** shows the whole frame.

@@ -20,8 +20,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.Typography
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -38,7 +36,6 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.vaylith.cleanrepsmobile.media.CanonicalSourcePublisher
 import com.vaylith.cleanrepsmobile.media.CaptureGeometry
@@ -46,23 +43,7 @@ import com.vaylith.cleanrepsmobile.model.ConnectionSettings
 import com.vaylith.cleanrepsmobile.session.AppState
 import com.vaylith.cleanrepsmobile.session.SessionController
 
-private val Accent = Color(0xFFFF6D00)
 private val Scrim = Color.Black.copy(alpha = 0.55f)
-
-/** The camera screen's dark theme, with type sized to read from about 3 m while live. */
-@Composable
-fun CleanRepsTheme(content: @Composable () -> Unit) {
-    val base = Typography()
-    MaterialTheme(
-        colorScheme = darkColorScheme(primary = Accent, onPrimary = Color.Black, background = Color.Black, surface = Color(0xFF121212)),
-        typography = base.copy(
-            titleLarge = base.titleLarge.copy(fontSize = 24.sp),
-            titleMedium = base.titleMedium.copy(fontSize = 20.sp),
-            bodyLarge = base.bodyLarge.copy(fontSize = 18.sp),
-        ),
-        content = content,
-    )
-}
 
 /**
  * Where the `SurfaceView` goes in a window of [windowW] x [windowH] px: M3c's
@@ -125,6 +106,7 @@ fun CameraScreen(
     val health = rememberServerHealth(controller, controller::serverHealth)
     var portraitHintDismissed by rememberSaveable { mutableStateOf(false) }
     var diagnosticsOpen by rememberSaveable { mutableStateOf(false) }
+    var themesOpen by rememberSaveable { mutableStateOf(false) }
     var sessionCheckFor by rememberSaveable { mutableStateOf<String?>(null) }
     var sessionCheckShownFor by rememberSaveable { mutableStateOf<String?>(null) }
     // After Stop video: the Session check card opens once for the capture that just ended.
@@ -149,6 +131,7 @@ fun CameraScreen(
             OverflowAction.MANUAL_MARKER -> controller.saveManualMarker()
             OverflowAction.LAST_SESSION_CHECK -> sessionCheckFor = state.lastCaptureId
             OverflowAction.DIAGNOSTICS -> diagnosticsOpen = true
+            OverflowAction.THEMES -> themesOpen = true
         }
     }
     val onCommand: (RailCommand) -> Unit = { command ->
@@ -245,6 +228,7 @@ fun CameraScreen(
             DiagnosticsSheet(landscape, publisher, health, controller::diagnosticEventLines, controller::diagnosticsExport,
                 onDismiss = { diagnosticsOpen = false })
         }
+        if (themesOpen) CameraThemePicker(landscape, onDismiss = { themesOpen = false })
     }
 }
 

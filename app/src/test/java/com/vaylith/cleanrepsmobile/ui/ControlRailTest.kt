@@ -85,6 +85,7 @@ class ControlRailTest {
                 // OD-4: voice hints are on by default; Speak verdicts is off.
                 OverflowItem(OverflowAction.VOICE_HINTS, checked = true),
                 OverflowItem(OverflowAction.SPEAK_VERDICTS, checked = false),
+                OverflowItem(OverflowAction.THEMES, checked = null),
                 // M8b: Diagnostics is always offered.
                 OverflowItem(OverflowAction.DIAGNOSTICS, checked = null),
             ),
@@ -99,7 +100,7 @@ class ControlRailTest {
             assertEquals("$state", 1, overflow.count { it.action == OverflowAction.AUDIO_TEST })
             assertEquals("$state", OverflowAction.DIAGNOSTICS, overflow.last().action)
         }
-        assertEquals(listOf("Audio test", "Voice hints", "Speak verdicts", "Save manual review marker", "Last session check", "Diagnostics"),
+        assertEquals(listOf("Audio test", "Voice hints", "Speak verdicts", "Save manual review marker", "Last session check", "Themes", "Diagnostics"),
             OverflowAction.entries.map { it.label })
     }
 
@@ -107,7 +108,7 @@ class ControlRailTest {
         assertTrue(ControlRailModel.from(AppState(), configured = true, permission = true).overflow.none { it.action == OverflowAction.LAST_SESSION_CHECK })
         val stopped = AppState(readiness = CaptureReadiness.STOPPED, lastCaptureId = "capture-1")
         assertEquals(
-            listOf(OverflowAction.AUDIO_TEST, OverflowAction.VOICE_HINTS, OverflowAction.SPEAK_VERDICTS, OverflowAction.LAST_SESSION_CHECK, OverflowAction.DIAGNOSTICS),
+            listOf(OverflowAction.AUDIO_TEST, OverflowAction.VOICE_HINTS, OverflowAction.SPEAK_VERDICTS, OverflowAction.LAST_SESSION_CHECK, OverflowAction.THEMES, OverflowAction.DIAGNOSTICS),
             ControlRailModel.from(stopped, configured = true, permission = true).overflow.map { it.action },
         )
         // It stays while the next video runs, for the capture before it.
