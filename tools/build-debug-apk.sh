@@ -126,6 +126,9 @@ trap cleanup EXIT
 # Keep the complete log private and emit a compact, redacted failure context at
 # the end. The AX41 autopilot intentionally retains only the command tail, so
 # this makes compiler/AAPT causes actionable without emitting runtime config.
+# A previous lint failure must not replace a fresh test/compile failure's diagnostics.
+lint_report="app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt"
+rm -f "$lint_report"
 set +e
 ./gradlew "${gradle_args[@]}" >"$gradle_log" 2>&1
 gradle_status=$?
@@ -142,7 +145,6 @@ if [[ $gradle_status -ne 0 ]]; then
   if [[ $compiler_status -eq 0 ]]; then diagnostic_log="$gradle_log"; fi
   # Lint writes a concise text report even when the aggregate build fails.
   # Prefer it over Gradle's generic task summary when it is present.
-  lint_report="app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt"
   if [[ $compiler_status -eq 0 && -s "$lint_report" ]] && grep -Eq "^[0-9]*[1-9][0-9]* errors?[, ]" "$lint_report"; then diagnostic_log="$lint_report"; fi
   printf 'GRADLE_FAILURE_CONTEXT_BEGIN\n'
   # The coordination surface retains a short command tail. Keep the emitted

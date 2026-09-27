@@ -177,12 +177,14 @@ class CameraScreenContractTest {
             "OverflowAction.SPEAK_VERDICTS -> controller.toggleSpeakVerdicts()",
             "OverflowAction.MANUAL_MARKER -> controller.saveManualMarker()",
             "BannerAction.REOPEN_CAMERA -> controller.reopenCamera()",
-            "BannerAction.STOP_VIDEO -> controller.stopVideo()",
+            "BannerAction.STOP_VIDEO -> stopAndCheck()",
             "RailCommand.OPEN_CONNECTION_SETTINGS -> sheet = SetupSection.CONNECTION",
             "onSettings = { sheet = SetupSection.CONNECTION }",
             "onDrill = { sheet = SetupSection.DRILL }",
             "onSelectDrill = controller::selectDrill",
         ).forEach { assertTrue(it, it in screen) }
+        val stopHandler = screen.substringAfter("val stopAndCheck: () -> Unit =").substringBefore("val onBannerAction:")
+        assertTrue("the report action must still stop the publisher through the controller", "controller.stopVideo()" in stopHandler)
         // The interim M7a panels are gone.
         listOf("InterimControls", "moreOpen", "FilterChip(").forEach { assertFalse(it, it in screen) }
         // The interim M7a status panel (its own Reopen camera button) is gone; M8a's StatusOverlay of ui/StatusOverlay.kt takes a model.
