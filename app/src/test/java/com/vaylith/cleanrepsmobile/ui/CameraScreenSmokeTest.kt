@@ -3,21 +3,22 @@ package com.vaylith.cleanrepsmobile.ui
 import android.content.ComponentName
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.view.View
 import android.os.Build
 import android.os.Looper
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
-import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -103,6 +104,7 @@ class CameraScreenSmokeTest {
     private val locks = mutableListOf<Boolean>()
     private val publishers = mutableListOf<FakePublisher>()
     private var shownAppearance: CameraThemePreferences? = null
+    private var renderedRootView: View? = null
     private var shownPrimary: Color? = null
     private lateinit var renderedController: SessionController
 
@@ -220,9 +222,16 @@ class CameraScreenSmokeTest {
         val directory = System.getenv("CLEAN_REPS_THEME_SCREENSHOT_DIR")?.takeIf { it.isNotBlank() } ?: return
         val output = File(directory).apply { mkdirs() }
         val screen = if (orientation == Configuration.ORIENTATION_LANDSCAPE) "landscape" else "portrait"
-        val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
         val file = File(output, "camera-$screen-${theme.name.lowercase()}.png")
-        file.outputStream().use { assertTrue("PNG was written", bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        // Draw the host controls directly: PixelCopy waits for a real window redraw
+        // that this Robolectric host does not provide. The camera SurfaceView stays blank.
+        compose.runOnIdle {
+            val view = checkNotNull(renderedRootView)
+            val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(bitmap))
+            file.outputStream().use { assertTrue("PNG was written", bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            bitmap.recycle()
+        }
     }
 
     private fun setUpConnection(orientation: Int) {
@@ -287,6 +296,7 @@ class CameraScreenSmokeTest {
             shown = LocalConfiguration.current.orientation
             CleanRepsTheme {
                 shownAppearance = LocalCameraTheme.current.preferences
+                renderedRootView = LocalView.current.rootView
                 shownPrimary = MaterialTheme.colorScheme.primary
                 CameraScreen(
                     controller = controller,
