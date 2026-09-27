@@ -846,6 +846,49 @@ class SessionControllerTest {
         assertFalse(controller.state.value.requestInFlight)
     }
 
+    @Test fun `returning after leaving the screen restarts the same session once the old capture is ended`() {
+        val controller = live()
+        controller.startPractice()
+        settle()
+        val originalPublisher = publisher
+        val lost = backend.hold("lost")
+
+        visible = false
+        controller.onLeftScreen()
+        settle()
+        assertEquals(CaptureReadiness.STOPPED, controller.state.value.readiness)
+        assertEquals("capture-1", controller.state.value.lastCaptureId)
+        assertNull(controller.state.value.captureId)
+        assertFalse(controller.state.value.practiceActive)
+        assertFalse(controller.state.value.orientationLocked)
+
+        visible = true
+        controller.restartVideo()
+        settle()
+        // Waiting for the terminal report is real server work; it must not attach overlapping video.
+        assertTrue(controller.state.value.requestInFlight)
+        assertEquals("Reporting the last video as ended...", controller.state.value.statusDetail)
+        assertEquals(listOf(0L), backend.attachEpochs)
+        assertEquals(listOf("start:0"), publisher.calls.filter { it.startsWith("start:") })
+
+        lost.complete(Unit)
+        settle()
+        publisher.live()
+        settle()
+        assertTrue(originalPublisher === publisher)
+        assertEquals(1, backend.calls.count { it == "createSession" })
+        assertEquals("session-1", controller.state.value.sessionId)
+        assertEquals(listOf(0L, 1L), backend.attachEpochs)
+        assertEquals(listOf("start:0", "start:1"), publisher.calls.filter { it.startsWith("start:") })
+        assertEquals("capture-2", controller.state.value.captureId)
+        assertEquals(CaptureReadiness.LIVE, controller.state.value.readiness)
+        assertTrue(controller.state.value.orientationLocked)
+        assertFalse(controller.state.value.requestInFlight)
+        assertTrue(store.pending().isEmpty())
+        assertEquals(listOf(HealthCall("capture-1", "lost", "left the screen", setOf("capture-1"))), lostCalls())
+        assertTrue(order.indexOf("lost:capture-1") < order.indexOf("attachCapture:1"))
+    }
+
     @Test fun `Restart video is offered only for the three blocked reasons, while LIVE`() {
         val controller = live()
         val restartReasons = setOf(

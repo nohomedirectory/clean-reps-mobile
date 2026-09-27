@@ -104,6 +104,7 @@ class CameraScreenSmokeTest {
     private val publishers = mutableListOf<FakePublisher>()
     private var shownAppearance: CameraThemePreferences? = null
     private var shownPrimary: Color? = null
+    private lateinit var renderedController: SessionController
 
     @After fun tearDown() {
         uiScope.cancel()
@@ -133,6 +134,25 @@ class CameraScreenSmokeTest {
     @Test @Config(qualifiers = LANDSCAPE)
     fun `landscape themes and motion change live without touching the capture`() =
         changeThemesWhileLive(Configuration.ORIENTATION_LANDSCAPE, LANDSCAPE_GEOMETRY)
+
+    @Test @Config(qualifiers = LANDSCAPE)
+    fun `return and restart keep controls visible while explicit stop offers the previous report`() {
+        val publisher = render(CONFIGURED, true, LANDSCAPE_GEOMETRY, Configuration.ORIENTATION_LANDSCAPE)
+        primary(PrimaryAction.GO_LIVE).performClick()
+        compose.runOnIdle { publisher.live() }
+        compose.runOnIdle { renderedController.onLeftScreen() }
+        compose.onNodeWithText("Session check").assertDoesNotExist()
+        primary(PrimaryAction.RESTART_VIDEO).assertIsDisplayed().assertIsEnabled().performClick()
+        compose.runOnIdle { publisher.live() }
+        compose.onNodeWithText("Session check").assertDoesNotExist()
+        assertEquals(2, backend.calls.count { it == "attachCapture" })
+        assertEquals(1, publishers.size)
+        compose.onNodeWithText("Stop video").performClick()
+        compose.onNodeWithText("Session check").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Close Session check").performClick()
+        compose.onNodeWithText("Session check").assertDoesNotExist()
+        primary(PrimaryAction.RESTART_VIDEO).assertIsDisplayed().assertIsEnabled()
+    }
 
     private fun changeThemesWhileLive(orientation: Int, geometry: CaptureGeometry) {
         val publisher = render(CONFIGURED, permission = true, geometry = geometry, orientation = orientation)
@@ -261,7 +281,7 @@ class CameraScreenSmokeTest {
 
     /** Renders CameraScreen as MainActivity does and checks that the window has the expected orientation. */
     private fun render(settings: ConnectionSettings, permission: Boolean, geometry: CaptureGeometry, orientation: Int): FakePublisher {
-        val controller = controller(settings, geometry)
+        val controller = controller(settings, geometry).also { renderedController = it }
         var shown: Int? = null
         compose.setContent {
             shown = LocalConfiguration.current.orientation

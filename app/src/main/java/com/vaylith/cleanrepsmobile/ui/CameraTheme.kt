@@ -29,12 +29,12 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -231,12 +231,16 @@ fun Modifier.cameraThemePanel(shape: Shape = RoundedCornerShape(20.dp)): Modifie
 }
 
 @Composable
-private fun rememberPanelPhase(enabled: Boolean): State<Float> = produceState(0f, enabled) {
-    value = 0f
-    if (enabled) while (isActive) {
-        value = (SystemClock.uptimeMillis() % 24_000L) / 24_000f
-        delay(100L) // Ten small canvas redraws per second; no bitmap allocation or blur layers.
+private fun rememberPanelPhase(enabled: Boolean): State<Float> {
+    val phase = remember { mutableStateOf(0f) }
+    LaunchedEffect(enabled) {
+        phase.value = 0f
+        if (enabled) while (isActive) {
+            phase.value = (SystemClock.uptimeMillis() % 24_000L) / 24_000f
+            delay(100L) // Ten small canvas redraws per second; no bitmap allocation or blur layers.
+        }
     }
+    return phase
 }
 
 @Composable

@@ -108,19 +108,26 @@ fun CameraScreen(
     var diagnosticsOpen by rememberSaveable { mutableStateOf(false) }
     var themesOpen by rememberSaveable { mutableStateOf(false) }
     var sessionCheckFor by rememberSaveable { mutableStateOf<String?>(null) }
-    var sessionCheckShownFor by rememberSaveable { mutableStateOf<String?>(null) }
-    // After Stop video: the Session check card opens once for the capture that just ended.
-    LaunchedEffect(state.lastCaptureId) {
+    var checkAfterStop by rememberSaveable { mutableStateOf(false) }
+    // Only the athlete's Stop video tap opens the report automatically. Backgrounding,
+    // connection errors and Restart also end captures, but must not cover the restart controls.
+    LaunchedEffect(state.lastCaptureId, state.videoRunning, state.requestInFlight, checkAfterStop) {
         val ended = state.lastCaptureId
-        if (ended != null && ended != sessionCheckShownFor) {
-            sessionCheckShownFor = ended
+        if (checkAfterStop && !state.videoRunning && !state.requestInFlight && ended != null) {
+            checkAfterStop = false
             sessionCheckFor = ended
+        }
+    }
+    val stopAndCheck: () -> Unit = {
+        if (state.videoRunning && !state.requestInFlight) {
+            checkAfterStop = true
+            controller.stopVideo()
         }
     }
     val onBannerAction: (BannerAction) -> Unit = { action ->
         when (action) {
             BannerAction.REOPEN_CAMERA -> controller.reopenCamera()
-            BannerAction.STOP_VIDEO -> controller.stopVideo()
+            BannerAction.STOP_VIDEO -> stopAndCheck()
         }
     }
     val onOverflow: (OverflowAction) -> Unit = { action ->
@@ -135,6 +142,10 @@ fun CameraScreen(
         }
     }
     val onCommand: (RailCommand) -> Unit = { command ->
+        if (command == RailCommand.START_VIDEO || command == RailCommand.RESTART_VIDEO) {
+            sessionCheckFor = null
+            checkAfterStop = false
+        }
         when (command) {
             RailCommand.OPEN_CONNECTION_SETTINGS -> sheet = SetupSection.CONNECTION
             RailCommand.REQUEST_CAMERA_PERMISSION -> onRequestPermission()
@@ -181,7 +192,7 @@ fun CameraScreen(
             }
         }
         val railView: @Composable (Modifier) -> Unit = { modifier ->
-            ControlRail(rail, cameraSwitch, landscape, onCommand, controller::stopVideo, onSettings = { sheet = SetupSection.CONNECTION },
+            ControlRail(rail, cameraSwitch, landscape, onCommand, stopAndCheck, onSettings = { sheet = SetupSection.CONNECTION },
                 onDrill = { sheet = SetupSection.DRILL }, onOverflow = onOverflow,
                 onSwitchCamera = {
                     if (permission && controller.switchCamera()) cameraFacing = publisher.cameraFacing

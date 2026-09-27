@@ -301,6 +301,7 @@ fun SessionCheckCard(
         }
     }
     ScreenPanel(title = "Session check", landscape = landscape, onDismiss = onDismiss) {
+        Text("Report for the video that stopped. Close this to return to the camera.", style = MaterialTheme.typography.bodySmall)
         when (val current = state) {
             SessionCheckState.Checking -> Text(SessionCheckCardModel.CHECKING, style = MaterialTheme.typography.bodyLarge)
             SessionCheckState.NoAnalysis -> Text(SessionCheckCardModel.NO_ANALYSIS, style = MaterialTheme.typography.titleMedium)
